@@ -4,6 +4,8 @@ Local web dashboard for Claude Code (or any agent) to report progress while it w
 
 Pairs with the bundled **status-orchestrator** skill, which turns Claude into an orchestrator: it maintains the status file, delegates work to background subagents, and holds them to a quality bar.
 
+![AI Status dashboard](docs/screenshot.png)
+
 ## What it does
 
 - Runs a small Go server on `http://127.0.0.1:7879`.
