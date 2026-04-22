@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>AI Status</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2">
+<link rel="alternate icon" href="/favicon.ico">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<aside id="sidebar">
+  <div class="side-head">
+    <div class="brand">
+      <img src="/favicon.svg?v=2" alt="" class="logo">
+      <h1>AI Status</h1>
+    </div>
+    <div class="side-actions">
+      <button id="notify-btn" title="Enable desktop notifications" aria-label="Toggle desktop notifications" aria-pressed="false">🔕</button>
+      <button id="help-btn" title="What is this?" aria-label="Help">?</button>
+      <button id="new-btn" title="New session">＋</button>
+    </div>
+  </div>
+  <input type="search" id="search" placeholder="Search sessions…" autocomplete="off">
+  <section>
+    <h2>Active</h2>
+    <ul id="list-active"></ul>
+  </section>
+  <section>
+    <h2 class="arch-head">Archived <span id="arch-count"></span></h2>
+    <ul id="list-archived" hidden></ul>
+  </section>
+</aside>
+<main>
+  <header id="view-head" hidden>
+    <div class="title-row">
+      <h2 id="view-title" title="Double-click to rename"></h2>
+      <div class="actions">
+        <span id="view-updated" class="updated-pill" title=""></span>
+        <button id="rename-btn" title="Rename">Rename</button>
+        <button id="arch-btn"></button>
+        <button id="del-btn" class="danger" title="Delete">Delete</button>
+      </div>
+    </div>
+    <code id="view-path" class="path" title="Click to copy"></code>
+  </header>
+  <article id="view" class="md">
+    <div class="empty">Create a session to get started.</div>
+  </article>
+</main>
+
+<dialog id="help-dialog">
+  <div class="help-body">
+    <div class="help-head">
+      <img src="/favicon.svg?v=2" alt="" class="logo big">
+      <h2>AI Status</h2>
+      <button id="help-close" aria-label="Close">×</button>
+    </div>
+
+    <p class="lead">A live dashboard for AI agent sessions. Each session is a <code>.md</code> file on disk; this app renders it in real time while your agents write to it.</p>
+
+    <h3>How it works</h3>
+    <ol>
+      <li>Click <strong>＋</strong> to create a session. The app gives you a file path.</li>
+      <li>Click the path to copy it. Paste it into Claude (or any agent).</li>
+      <li>The agent writes status updates to that file.</li>
+      <li>This page re-renders live on every save.</li>
+    </ol>
+
+    <h3>Companion skill</h3>
+    <p>Pair this with the <strong>status-orchestrator</strong> skill. It makes Claude act as orchestrator/gatekeeper: maintains the status file, delegates work to background subagents, holds them to an industry-standard quality bar.</p>
+    <p>
+      <a href="https://github.com/jwillmer/ai-status/raw/main/static/status-orchestrator.skill" class="dl-btn" download>⬇ Download skill</a>
+      &nbsp;or view the source on
+      <a href="https://github.com/jwillmer/ai-status/blob/main/skill/status-orchestrator/SKILL.md" target="_blank" rel="noopener">GitHub</a>.
+    </p>
+    <p class="hint">In Claude: <strong>Customize → Skills → Install skill</strong>, select the downloaded <code>.skill</code> file.</p>
+
+    <h3>Tips</h3>
+    <ul>
+      <li><strong>Double-click</strong> a session title to rename.</li>
+      <li><strong>Archive</strong> old sessions to keep the sidebar clean.</li>
+      <li><strong>Pin</strong> (☆ on hover) keeps important sessions on top.</li>
+      <li><strong>🔕/🔔 bell</strong> toggles desktop notifications for file changes across <em>all</em> sessions while the tab is hidden.</li>
+      <li>The app lives in the system tray — closing the tab leaves the server running. Quit only from the tray.</li>
+      <li><kbd>Ctrl</kbd>+<kbd>N</kbd> = new session.</li>
+    </ul>
+  </div>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

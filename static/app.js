@@ -1,0 +1,585 @@
+const $ = (s) => document.querySelector(s);
+const listActive = $("#list-active");
+const listArchived = $("#list-archived");
+const archCount = $("#arch-count");
+const searchInput = $("#search");
+const viewHead = $("#view-head");
+const viewTitle = $("#view-title");
+const viewPath = $("#view-path");
+const viewUpdated = $("#view-updated");
+const viewEl = $("#view");
+const archBtn = $("#arch-btn");
+const delBtn = $("#del-btn");
+const renameBtn = $("#rename-btn");
+const newBtn = $("#new-btn");
+const helpBtn = $("#help-btn");
+const helpDialog = $("#help-dialog");
+const helpClose = $("#help-close");
+const notifyBtn = $("#notify-btn");
+const archHead = document.querySelector(".arch-head");
+
+let sessions = [];
+let currentId = null;
+let currentUpdated = null; // Date of current session last update
+let es = null;
+let archOpen = false;
+let searchQuery = "";
+
+function sessionSortKey(s) {
+  // Compare by epoch ms so that timestamps written with different TZ
+  // offsets (server local vs UTC "Z" from toISOString) sort consistently.
+  const t = s.updated || s.created;
+  if (!t) return 0;
+  const n = Date.parse(t);
+  return Number.isFinite(n) ? n : 0;
+}
+function sortSessions(arr) {
+  return arr.slice().sort((a, b) => {
+    const pa = a.pinned ? 1 : 0;
+    const pb = b.pinned ? 1 : 0;
+    if (pa !== pb) return pb - pa;
+    return sessionSortKey(b) - sessionSortKey(a);
+  });
+}
+
+async function api(path, opts = {}) {
+  const r = await fetch(path, {
+    headers: { "content-type": "application/json" },
+    ...opts,
+  });
+  if (!r.ok && r.status !== 204) throw new Error(await r.text());
+  if (r.status === 204) return null;
+  return r.json();
+}
+
+function fmtDate(iso) {
+  const d = new Date(iso);
+  const today = new Date();
+  const same = d.toDateString() === today.toDateString();
+  if (same) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+function fmtRelative(date) {
+  if (!date) return "never";
+  const ms = Date.now() - date.getTime();
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 5) return "just now";
+  if (s < 60) return `${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `${m}m ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.round(h / 24);
+  if (d < 7) return `${d}d ago`;
+  return date.toLocaleDateString([], { month: "short", day: "numeric" });
+}
+
+function fmtAbsolute(date) {
+  if (!date) return "";
+  return date.toLocaleString();
+}
+
+function renderList() {
+  const q = searchQuery.trim().toLowerCase();
+  const match = (s) => !q || (s.title || "").toLowerCase().includes(q);
+
+  const activeAll = sortSessions(sessions.filter(s => !s.archived));
+  const archivedAll = sortSessions(sessions.filter(s => s.archived));
+  const active = activeAll.filter(match);
+  const archived = archivedAll.filter(match);
+
+  if (q) {
+    archCount.textContent = archivedAll.length
+      ? `(${archived.length}/${archivedAll.length})`
+      : "";
+  } else {
+    archCount.textContent = archivedAll.length ? `(${archivedAll.length})` : "";
+  }
+  listArchived.hidden = !archOpen;
+
+  const build = (ul, arr, emptyLabel) => {
+    ul.innerHTML = "";
+    if (!arr.length) {
+      const li = document.createElement("li");
+      li.className = "item-meta";
+      li.style.cursor = "default";
+      li.textContent = emptyLabel;
+      ul.appendChild(li);
+      return;
+    }
+    for (const s of arr) {
+      const li = document.createElement("li");
+      li.dataset.id = s.id;
+      if (s.id === currentId) li.classList.add("active");
+      if (s.pinned) li.classList.add("pinned");
+      const updated = s.updated ? new Date(s.updated) : null;
+
+      const titleRow = document.createElement("div");
+      titleRow.className = "item-title-row";
+      const pinBtn = document.createElement("button");
+      pinBtn.className = "pin-btn" + (s.pinned ? " pinned" : "");
+      pinBtn.type = "button";
+      pinBtn.textContent = s.pinned ? "★" : "☆";
+      pinBtn.title = s.pinned ? "Unpin" : "Pin";
+      pinBtn.setAttribute("aria-label", s.pinned ? "Unpin session" : "Pin session");
+      pinBtn.onclick = (e) => {
+        e.stopPropagation();
+        togglePin(s.id);
+      };
+      const titleEl = document.createElement("span");
+      titleEl.className = "item-title";
+      titleEl.textContent = s.title;
+      titleRow.appendChild(titleEl);
+      titleRow.appendChild(pinBtn);
+
+      const metaRow = document.createElement("span");
+      metaRow.className = "item-meta";
+      const metaUpd = document.createElement("span");
+      metaUpd.className = "item-updated";
+      metaUpd.textContent = "upd. " + fmtRelative(updated);
+      metaUpd.title = updated ? fmtAbsolute(updated) : "";
+      metaRow.appendChild(metaUpd);
+
+      li.appendChild(titleRow);
+      li.appendChild(metaRow);
+      li.onclick = () => openSession(s.id);
+      ul.appendChild(li);
+    }
+  };
+
+  const emptyActive = q
+    ? (activeAll.length ? "No matches" : "No active sessions")
+    : "No active sessions";
+  const emptyArch = q ? "No matches" : "None";
+  build(listActive, active, emptyActive);
+  build(listArchived, archived, emptyArch);
+}
+
+async function togglePin(id) {
+  const s = sessions.find(x => x.id === id);
+  if (!s) return;
+  const next = !s.pinned;
+  try {
+    await api(`/api/sessions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ pinned: next }),
+    });
+    s.pinned = next;
+    renderList();
+  } catch (e) {
+    alert("Pin failed: " + e.message);
+  }
+}
+
+function updateUpdatedPill() {
+  if (!currentUpdated) {
+    viewUpdated.textContent = "";
+    viewUpdated.title = "";
+    viewUpdated.classList.remove("fresh", "stale");
+    return;
+  }
+  viewUpdated.textContent = "Updated " + fmtRelative(currentUpdated);
+  viewUpdated.title = fmtAbsolute(currentUpdated);
+  const ageSec = (Date.now() - currentUpdated.getTime()) / 1000;
+  viewUpdated.classList.toggle("fresh", ageSec < 10);
+  viewUpdated.classList.toggle("stale", ageSec > 300);
+}
+
+// tick relative times every second
+setInterval(() => {
+  updateUpdatedPill();
+  // update sidebar item-updated text
+  for (const li of document.querySelectorAll("#sidebar li[data-id]")) {
+    const s = sessions.find(x => x.id === li.dataset.id);
+    if (!s) continue;
+    const meta = li.querySelector(".item-updated");
+    if (!meta) continue;
+    const updated = s.updated ? new Date(s.updated) : null;
+    meta.textContent = "upd. " + fmtRelative(updated);
+  }
+}, 1000);
+
+async function loadSessions() {
+  sessions = await api("/api/sessions");
+  renderList();
+  if (!currentId) {
+    const top = sortSessions(sessions.filter(s => !s.archived))[0];
+    if (top) openSession(top.id);
+  }
+}
+
+async function createSession() {
+  const title = prompt("Session title?", "Session " + new Date().toLocaleString());
+  if (title === null) return;
+  const sess = await api("/api/sessions", {
+    method: "POST",
+    body: JSON.stringify({ title }),
+  });
+  sessions.unshift(sess);
+  renderList();
+  openSession(sess.id);
+}
+
+function closeStream() {
+  if (es) { es.close(); es = null; }
+}
+
+function applyUpdate(data) {
+  try {
+    const payload = typeof data === "string" ? JSON.parse(data) : data;
+    viewEl.innerHTML = payload.html || '<div class="empty">(empty file)</div>';
+    currentUpdated = payload.updated ? new Date(payload.updated) : new Date();
+    updateUpdatedPill();
+    // reflect in sidebar model
+    const s = sessions.find(x => x.id === currentId);
+    if (s) {
+      s.updated = currentUpdated.toISOString();
+      renderList();
+    }
+    // Notifications are fired from the global stream (/api/events) so they
+    // cover every session, not just the currently-viewed one.
+  } catch (e) {
+    console.error("bad update payload", e, data);
+  }
+}
+
+const DEFAULT_DOC_TITLE = "AI Status";
+let unseen = false;
+
+const FAVICON_NORMAL = "/favicon.svg";
+const FAVICON_BADGE = "data:image/svg+xml;utf8," + encodeURIComponent(
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">' +
+  '<path fill-rule="evenodd" clip-rule="evenodd" d="M11.9426 1.25H12.0574C14.3658 1.24999 16.1748 1.24998 17.5863 1.43975C19.031 1.63399 20.1711 2.03933 21.0659 2.93414C21.9607 3.82895 22.366 4.96897 22.5603 6.41371C22.75 7.82519 22.75 9.63423 22.75 11.9426V12.0574C22.75 14.3658 22.75 16.1748 22.5603 17.5863C22.366 19.031 21.9607 20.1711 21.0659 21.0659C20.1711 21.9607 19.031 22.366 17.5863 22.5603C16.1748 22.75 14.3658 22.75 12.0574 22.75H11.9426C9.63423 22.75 7.82519 22.75 6.41371 22.5603C4.96897 22.366 3.82895 21.9607 2.93414 21.0659C2.03933 20.1711 1.63399 19.031 1.43975 17.5863C1.24998 16.1748 1.24999 14.3658 1.25 12.0574V11.9426C1.24999 9.63423 1.24998 7.82519 1.43975 6.41371C1.63399 4.96897 2.03933 3.82895 2.93414 2.93414C3.82895 2.03933 4.96897 1.63399 6.41371 1.43975C7.82519 1.24998 9.63423 1.24999 11.9426 1.25ZM6.61358 2.92637C5.33517 3.09825 4.56445 3.42514 3.9948 3.9948C3.42514 4.56445 3.09825 5.33517 2.92637 6.61358C2.75159 7.91356 2.75 9.62177 2.75 12C2.75 14.3782 2.75159 16.0864 2.92637 17.3864C3.09825 18.6648 3.42514 19.4355 3.9948 20.0052C4.56445 20.5749 5.33517 20.9018 6.61358 21.0736C7.91356 21.2484 9.62177 21.25 12 21.25C14.3782 21.25 16.0864 21.2484 17.3864 21.0736C18.6648 20.9018 19.4355 20.5749 20.0052 20.0052C20.5749 19.4355 20.9018 18.6648 21.0736 17.3864C21.2484 16.0864 21.25 14.3782 21.25 12C21.25 9.62177 21.2484 7.91356 21.0736 6.61358C20.9018 5.33517 20.5749 4.56445 20.0052 3.9948C19.4355 3.42514 18.6648 3.09825 17.3864 2.92637C16.0864 2.75159 14.3782 2.75 12 2.75C9.62177 2.75 7.91356 2.75159 6.61358 2.92637ZM10.5172 6.4569C10.8172 6.74256 10.8288 7.21729 10.5431 7.51724L7.68596 10.5172C7.5444 10.6659 7.34812 10.75 7.14286 10.75C6.9376 10.75 6.74131 10.6659 6.59975 10.5172L5.4569 9.31724C5.17123 9.01729 5.18281 8.54256 5.48276 8.2569C5.78271 7.97123 6.25744 7.98281 6.5431 8.28276L7.14286 8.9125L9.4569 6.48276C9.74256 6.18281 10.2173 6.17123 10.5172 6.4569ZM12.25 9C12.25 8.58579 12.5858 8.25 13 8.25H18C18.4142 8.25 18.75 8.58579 18.75 9C18.75 9.41421 18.4142 9.75 18 9.75H13C12.5858 9.75 12.25 9.41421 12.25 9ZM10.5172 13.4569C10.8172 13.7426 10.8288 14.2173 10.5431 14.5172L7.68596 17.5172C7.5444 17.6659 7.34812 17.75 7.14286 17.75C6.9376 17.75 6.74131 17.6659 6.59975 17.5172L5.4569 16.3172C5.17123 16.0173 5.18281 15.5426 5.48276 15.2569C5.78271 14.9712 6.25744 14.9828 6.5431 15.2828L7.14286 15.9125L9.4569 13.4828C9.74256 13.1828 10.2173 13.1712 10.5172 13.4569ZM12.25 16C12.25 15.5858 12.5858 15.25 13 15.25H18C18.4142 15.25 18.75 15.5858 18.75 16C18.75 16.4142 18.4142 16.75 18 16.75H13C12.5858 16.75 12.25 16.4142 12.25 16Z" fill="#7aa2ff"/>' +
+  '<circle cx="20" cy="4" r="4" fill="#ff5a5a" stroke="#0f1115" stroke-width="1"/>' +
+  '</svg>'
+);
+
+function setFavicon(href) {
+  const link = document.querySelector('link[rel="icon"]');
+  if (link) link.setAttribute("href", href);
+}
+
+function setDocTitle(sessionTitle) {
+  document.title = sessionTitle || DEFAULT_DOC_TITLE;
+}
+
+function markUnseen() {
+  if (unseen) return;
+  unseen = true;
+  setFavicon(FAVICON_BADGE);
+}
+
+function clearUnseen() {
+  if (!unseen) return;
+  unseen = false;
+  setFavicon(FAVICON_NORMAL);
+}
+
+function isForeground() {
+  return document.visibilityState === "visible" && document.hasFocus();
+}
+
+function onForegroundChange() {
+  if (isForeground()) clearUnseen();
+}
+
+document.addEventListener("visibilitychange", onForegroundChange);
+window.addEventListener("focus", onForegroundChange);
+window.addEventListener("blur", () => { /* hook for future if needed */ });
+
+function openSession(id) {
+  currentId = id;
+  const s = sessions.find(x => x.id === id);
+  if (!s) return;
+  closeStream();
+  clearUnseen();
+  viewHead.hidden = false;
+  viewTitle.textContent = s.title;
+  setDocTitle(s.title);
+  viewPath.textContent = s.path;
+  archBtn.textContent = s.archived ? "Unarchive" : "Archive";
+  currentUpdated = s.updated ? new Date(s.updated) : null;
+  updateUpdatedPill();
+  renderList();
+  viewEl.innerHTML = '<div class="empty">Loading…</div>';
+
+  es = new EventSource(`/api/sessions/${id}/stream`);
+  es.addEventListener("update", (e) => applyUpdate(e.data));
+  es.onerror = () => { /* browser auto-reconnects */ };
+}
+
+async function toggleArchive() {
+  if (!currentId) return;
+  const s = sessions.find(x => x.id === currentId);
+  if (!s) return;
+  await api(`/api/sessions/${currentId}/archive`, {
+    method: "POST",
+    body: JSON.stringify({ archived: !s.archived }),
+  });
+  s.archived = !s.archived;
+  archBtn.textContent = s.archived ? "Unarchive" : "Archive";
+  renderList();
+}
+
+async function deleteSession() {
+  if (!currentId) return;
+  const s = sessions.find(x => x.id === currentId);
+  if (!s) return;
+  if (!confirm(`Delete "${s.title}"? The .md file will be removed.`)) return;
+  await api(`/api/sessions/${currentId}`, { method: "DELETE" });
+  sessions = sessions.filter(x => x.id !== currentId);
+  closeStream();
+  currentId = null;
+  viewHead.hidden = true;
+  viewEl.innerHTML = '<div class="empty">Select or create a session.</div>';
+  setDocTitle(null);
+  renderList();
+}
+
+async function copyPath() {
+  if (!currentId) return;
+  const s = sessions.find(x => x.id === currentId);
+  if (!s) return;
+  try {
+    await navigator.clipboard.writeText(s.path);
+  } catch {
+    const r = document.createRange();
+    r.selectNode(viewPath);
+    getSelection().removeAllRanges();
+    getSelection().addRange(r);
+    document.execCommand?.("copy");
+  }
+  viewPath.classList.add("copied");
+  clearTimeout(copyPath._t);
+  copyPath._t = setTimeout(() => viewPath.classList.remove("copied"), 1100);
+}
+
+function startRename() {
+  if (!currentId) return;
+  if (viewTitle.isContentEditable) return;
+  viewTitle.contentEditable = "true";
+  viewTitle.focus();
+  const r = document.createRange();
+  r.selectNodeContents(viewTitle);
+  const sel = getSelection();
+  sel.removeAllRanges();
+  sel.addRange(r);
+}
+
+async function commitRename() {
+  if (!viewTitle.isContentEditable) return;
+  viewTitle.contentEditable = "false";
+  const s = sessions.find(x => x.id === currentId);
+  if (!s) return;
+  const title = viewTitle.textContent.trim();
+  if (!title || title === s.title) {
+    viewTitle.textContent = s.title;
+    return;
+  }
+  try {
+    await api(`/api/sessions/${currentId}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    });
+    s.title = title;
+    if (s.id === currentId) setDocTitle(title);
+    renderList();
+  } catch (e) {
+    viewTitle.textContent = s.title;
+    alert("Rename failed: " + e.message);
+  }
+}
+
+viewTitle.addEventListener("dblclick", startRename);
+viewTitle.addEventListener("blur", commitRename);
+viewTitle.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") { e.preventDefault(); viewTitle.blur(); }
+  if (e.key === "Escape") {
+    const s = sessions.find(x => x.id === currentId);
+    if (s) viewTitle.textContent = s.title;
+    viewTitle.contentEditable = "false";
+  }
+});
+viewPath.addEventListener("click", copyPath);
+
+newBtn.onclick = createSession;
+archBtn.onclick = toggleArchive;
+delBtn.onclick = deleteSession;
+renameBtn.onclick = startRename;
+archHead.onclick = () => { archOpen = !archOpen; renderList(); };
+
+searchInput.addEventListener("input", () => {
+  searchQuery = searchInput.value;
+  renderList();
+});
+
+/* ---------------------------------------------------------------------------
+ * Desktop notifications
+ * Opt-in bell in the sidebar. Fires a native notification via the
+ * Notifications API when an SSE update arrives for the open session AND the
+ * tab is hidden. State persisted in localStorage.notifications_enabled.
+ * No libraries, no service workers — just window Notifications.
+ * ------------------------------------------------------------------------- */
+const NOTIF_KEY = "notifications_enabled";
+const NOTIF_THROTTLE_MS = 3000;
+const notifLastFired = new Map(); // sessionId -> timestamp
+let notifState = "off"; // "off" | "on" | "denied"
+const notifSupported = typeof window !== "undefined" && "Notification" in window;
+
+function renderNotifyBtn() {
+  if (!notifyBtn) return;
+  notifyBtn.classList.remove("on", "denied");
+  if (!notifSupported) {
+    notifyBtn.classList.add("denied");
+    notifyBtn.textContent = "🔕";
+    notifyBtn.title = "Notifications not supported in this browser";
+    notifyBtn.setAttribute("aria-pressed", "false");
+    return;
+  }
+  if (notifState === "denied") {
+    notifyBtn.classList.add("denied");
+    notifyBtn.textContent = "🔕";
+    notifyBtn.title = "Notifications blocked — check browser settings";
+    notifyBtn.setAttribute("aria-pressed", "false");
+  } else if (notifState === "on") {
+    notifyBtn.classList.add("on");
+    notifyBtn.textContent = "🔔";
+    notifyBtn.title = "Desktop notifications on (click to disable)";
+    notifyBtn.setAttribute("aria-pressed", "true");
+  } else {
+    notifyBtn.textContent = "🔕";
+    notifyBtn.title = "Enable desktop notifications";
+    notifyBtn.setAttribute("aria-pressed", "false");
+  }
+}
+
+function initNotifyState() {
+  if (!notifSupported) { notifState = "denied"; renderNotifyBtn(); return; }
+  const stored = localStorage.getItem(NOTIF_KEY) === "true";
+  const perm = Notification.permission;
+  if (perm === "denied") {
+    notifState = "denied";
+    localStorage.removeItem(NOTIF_KEY);
+  } else if (stored && perm === "granted") {
+    notifState = "on";
+  } else {
+    notifState = "off";
+    if (stored && perm !== "granted") localStorage.removeItem(NOTIF_KEY);
+  }
+  renderNotifyBtn();
+}
+
+async function onNotifyClick() {
+  if (!notifSupported || notifState === "denied") return;
+  if (notifState === "on") {
+    notifState = "off";
+    localStorage.setItem(NOTIF_KEY, "false");
+    renderNotifyBtn();
+    return;
+  }
+  // off -> request permission
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm === "granted") {
+      notifState = "on";
+      localStorage.setItem(NOTIF_KEY, "true");
+    } else if (perm === "denied") {
+      notifState = "denied";
+      localStorage.removeItem(NOTIF_KEY);
+      alert("Notifications are blocked. Enable them in your browser's site settings to receive alerts.");
+    } else {
+      notifState = "off";
+    }
+  } catch (e) {
+    notifState = "off";
+    console.error("Notification permission error", e);
+  }
+  renderNotifyBtn();
+}
+
+function htmlToPlainText(html) {
+  const tmp = document.createElement("div");
+  tmp.innerHTML = html;
+  return (tmp.textContent || "").replace(/\s+/g, " ").trim();
+}
+
+// Fire a notification for any session update (from the global /api/events stream)
+// when the tab is hidden. Throttled per-session.
+function maybeNotifyAny(p) {
+  if (notifState !== "on" || !notifSupported) return;
+  if (Notification.permission !== "granted") {
+    notifState = "off";
+    localStorage.removeItem(NOTIF_KEY);
+    renderNotifyBtn();
+    return;
+  }
+  if (isForeground()) return;
+  if (!p || !p.sessionId) return;
+  const now = Date.now();
+  const last = notifLastFired.get(p.sessionId) || 0;
+  if (now - last < NOTIF_THROTTLE_MS) return;
+  notifLastFired.set(p.sessionId, now);
+
+  const title = (p.title || "Status update") + " updated";
+  const body = p.snippet || "File changed.";
+  try {
+    const n = new Notification(title, {
+      body,
+      icon: "/favicon.svg",
+      tag: p.sessionId,
+    });
+    n.onclick = () => {
+      window.focus();
+      n.close();
+    };
+  } catch (e) {
+    console.error("Notification failed", e);
+  }
+}
+
+// Global event stream: receives update metadata for every session, lets the
+// sidebar auto-reorder and notifications fire for any session (not just the
+// currently-viewed one).
+let globalEs = null;
+function startGlobalStream() {
+  if (globalEs) globalEs.close();
+  globalEs = new EventSource("/api/events");
+  globalEs.addEventListener("update", (e) => {
+    let p;
+    try { p = JSON.parse(e.data); } catch { return; }
+    const s = sessions.find(x => x.id === p.sessionId);
+    if (s) {
+      if (p.updated) s.updated = p.updated;
+      renderList();
+    }
+    if (p.sessionId === currentId && !isForeground()) {
+      markUnseen();
+    }
+    maybeNotifyAny(p);
+  });
+  globalEs.onerror = () => { /* browser auto-reconnects */ };
+}
+
+if (notifyBtn) notifyBtn.onclick = onNotifyClick;
+initNotifyState();
+startGlobalStream();
+/* --- end notifications --- */
+
+helpBtn.onclick = () => helpDialog.showModal();
+helpClose.onclick = () => helpDialog.close();
+helpDialog.addEventListener("click", (e) => {
+  const r = helpDialog.getBoundingClientRect();
+  if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) {
+    helpDialog.close();
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
+    e.preventDefault();
+    createSession();
+  }
+});
+
+loadSessions();

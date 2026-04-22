@@ -1,0 +1,25 @@
+# binary + build artifacts
+/ai-status.exe
+/status-updates.exe
+/*.log
+
+# runtime data
+/data/
+/sessions/
+status-updates.log
+
+# Go tooling
+*.syso.bak
+
+# editor
+.vscode/
+.idea/
+*.swp
+*~
+
+# local agent config
+.claude/
+
+# OS
+Thumbs.db
+desktop.ini
