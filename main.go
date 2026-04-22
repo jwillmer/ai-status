@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -320,8 +321,19 @@ func main() {
 		log.SetOutput(lf)
 	}
 
+	ln, err := net.Listen("tcp", *addr)
+	if err != nil {
+		// Port busy → assume another instance is already running.
+		// Open browser tab and exit quietly.
+		log.Printf("listen %s failed (%v); assuming another instance is running, opening browser", *addr, err)
+		if !*noOpen {
+			_ = browser.OpenURL(appURL)
+		}
+		return
+	}
+
 	srvErr := make(chan error, 1)
-	go func() { srvErr <- runServer(*addr, rootAbs) }()
+	go func() { srvErr <- runServer(ln, rootAbs) }()
 
 	if !*noOpen {
 		go func() {
@@ -370,7 +382,7 @@ func main() {
 	systray.Run(onReady, func() {})
 }
 
-func runServer(addr, rootAbs string) error {
+func runServer(ln net.Listener, rootAbs string) error {
 	sessDir := filepath.Join(rootAbs, "sessions")
 	dataDir := filepath.Join(rootAbs, "data")
 	if err := os.MkdirAll(sessDir, 0755); err != nil {
@@ -629,7 +641,7 @@ func runServer(addr, rootAbs string) error {
 	})
 
 	log.Printf("status-updates listening on %s  (root=%s)", appURL, rootAbs)
-	return http.ListenAndServe(addr, mux)
+	return http.Serve(ln, mux)
 }
 
 func watchLoop(w *fsnotify.Watcher, store *Store, h *hub) {
