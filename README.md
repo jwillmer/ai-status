@@ -9,12 +9,58 @@ Pairs with the bundled **status-orchestrator** skill, which turns Claude into an
 ## What it does
 
 - Runs a small Go server on `http://127.0.0.1:7879`.
-- Manages a list of sessions (create, rename, pin, archive).
-- Each session = one `.md` file on disk, under `./sessions/`.
+- Manages a list of sessions (create, rename, pin, archive, search).
+- Each session = one `.md` file on disk under `./sessions/`.
 - Click a session title in the sidebar to copy its absolute path — paste that into Claude so it knows where to write.
 - Page re-renders live (SSE) every time the file changes.
 - Optional desktop notifications when a session changes while the tab is hidden.
-- System-tray icon with Open / Copy URL / Quit.
+- System-tray icon with Open / Copy URL / Quit. Single-instance — re-launching the exe reuses the running server and pops a fresh browser tab.
+
+## Features
+
+### Embedded terminals per session
+
+Open a Claude (or any) console directly inside the session's column — no Alt-Tab, no lost context:
+
+- ConPTY-backed on Windows; full key passthrough (Esc, Ctrl+B, etc.) so Claude Code's shortcuts work.
+- Terminal survives tab switches — the PTY lives on the server. `× Close` kills it explicitly; nothing else does.
+- `▶ Show cmd` reattaches to a running PTY, or resumes via `claude --resume <uuid>` when the session has a stored Claude session ID, or starts fresh otherwise.
+- `Open cmd` launches a detached Windows console in the session's working folder — same resume/fresh logic.
+- Ctrl+C copies selected text; Ctrl+V pastes. Ctrl+C with no selection forwards the SIGINT as usual.
+
+### Live diff highlighting
+
+Every time the file is re-saved, blocks whose plain text appeared since the last version get an amber highlight in the rendered markdown — including table rows. The mark persists until the *next* update, so you never miss what changed while you were away.
+
+### Skill that loads itself
+
+The `status-orchestrator` skill is embedded in the binary and written to `data/status-orchestrator.SKILL.md` on startup. When you `▶ Start cmd` for a fresh session, the terminal runs:
+
+```
+claude "Read and follow <path-to-SKILL.md>, then use this for status: <path-to-session.md>"
+```
+
+So Claude adopts the orchestrator role immediately — no skill install required. (If you already installed the `.skill` zip from the help dialog, that's fine too; they're the same content.)
+
+### Themes
+
+Dark is the default. A sidebar-footer button cycles **System → Light → Dark**; the choice is stored as a `theme` cookie (1 year) and applied pre-paint (no flash on reload).
+
+### Mobile drawer
+
+Below 768px the sidebar collapses to an off-canvas drawer — tap the hamburger top-left to open. Tap the overlay or press Escape to close; selecting a session also closes it.
+
+### YAML frontmatter metadata
+
+Sessions store their metadata (`title`, `project_folder`, `claude_session`, `created`, `focus`) as YAML front matter at the top of the `.md` file. It renders invisibly in the dashboard (via `goldmark-meta`) but stays machine-readable. The header shows `focus` as a sub-title; the **Metadata** button toggles a panel with all fields.
+
+### Other conveniences
+
+- **Native folder picker** via a real Windows `FolderBrowserDialog` (not the sandboxed `webkitdirectory` that only exposes the folder name).
+- **Open file** — opens the raw `.md` in your system's default editor.
+- **Renaming the title** rewrites the YAML `title:` field in place and keeps the sidebar / browser tab in sync.
+- **Auto-reload** — when the server restarts, the connection banner appears briefly; once the SSE stream reconnects, the tab reloads itself so you pick up new assets automatically.
+- **Relative timestamps** in coarse buckets ("just now", "a moment ago", "X minutes ago", "an hour ago", …) so nothing ticks every second.
 
 ## Requirements
 
