@@ -14,6 +14,35 @@ The user provides a path such as `C:\Projects\GitHub\ai\status-updates\sessions\
 - If the user has not provided a path, ask once. Do not proceed without one.
 - If the file does not exist, create it with the template below.
 - If it exists with user content (e.g. a title), preserve the title and append the orchestrator sections below it.
+- **Always record a Session reference block at the head of the file** (see §3). Its job is to capture the **Claude Code session ID** so the user can later run `/resume <id>` in Claude Code and pick up the exact conversation that was driving this status file.
+
+### Session reference block — what to capture
+
+Resolve these once at session start and write them into the file head:
+
+- `claude_session` — the Claude Code session UUID for the current conversation. Used with `/resume <claude_session>` in Claude Code. See the discovery steps below.
+- `project_folder` — the project working directory for this Claude session (the `cwd` from platform context, not the `sessions/` directory). This is where the user was running Claude Code when the conversation started.
+- `created` — ISO timestamp of first initialization. Leave untouched on subsequent updates.
+
+Do not re-record the `$STATUS_FILE` filename or path in the block — the user already has both (they opened the file).
+
+### How to discover the Claude Code session ID
+
+Claude Code writes the live transcript for the current conversation to a JSON-lines file under the user's home directory:
+
+```
+<home>/.claude/projects/<cwd-slug>/<session-uuid>.jsonl
+```
+
+where `<cwd-slug>` is the project working directory with `\`, `/`, and `:` each replaced by `-` (e.g. `C:\Projects\GitHub\ai-status` → `C--Projects-GitHub-ai-status`).
+
+Discovery steps (run exactly one, stop at the first hit):
+
+1. **Check environment:** if `$CLAUDE_SESSION_ID` is set in the shell, use its value.
+2. **List the project's transcript directory** and pick the most recently modified `.jsonl` file — its basename (minus `.jsonl`) is the session UUID. This is the reliable method and almost always works. Use a single Bash/Glob call; do not enumerate unrelated directories.
+3. **Fallback:** if neither works, write `claude_session: (unknown — ask user to paste from /status)` and move on. Do not block the session for this.
+
+If the file already has a Session reference block, preserve all of its values. Only refresh `claude_session` when the user explicitly confirms they want the current conversation linked (e.g. after a `/resume` that created a *new* branch, or if the existing ID is stale).
 
 ## 2. Your responsibilities
 
@@ -94,6 +123,14 @@ Initialize `$STATUS_FILE` with this structure. Preserve any pre-existing `# Titl
 
 _Created <existing timestamp>_
 
+<!-- status-orchestrator:session-ref
+claude_session: <session-uuid>
+project_folder: <project-cwd-where-claude-was-launched>
+created:        <ISO timestamp>
+-->
+
+> **Resume in Claude Code:** `/resume <session-uuid>` · **Folder:** `<project-cwd>`
+
 ---
 
 **Updated:** <ISO local datetime>
@@ -137,6 +174,8 @@ _(free-form scratchpad — decisions, links, constraints)_
 - **Move rows across sections on phase change**, never duplicate. A task exists in exactly one section at a time.
 - **Agent log is append-only newest-first.** Format: `- <HH:MM> <event> — <detail>`
 - **Idempotent updates**: if the file is missing a section, add it; don't assume structure is already correct.
+- **Never touch the Session reference block** (`<!-- status-orchestrator:session-ref ... -->` and the visible `> **Resume in Claude Code:** ...` line) once written. Add it if absent; otherwise leave it exactly as-is so resume lookups stay stable. The one field that *does* get touched, `claude_session`, is only changed under the §10b protocol.
+- **Title sync with Claude session rename.** The `# <title>` at the top of `$STATUS_FILE` and the Claude Code session title are the same thing and must not drift. When the user runs `/rename <new>` in Claude Code — or asks you to rename the session — update the `# <title>` line to match the new name in the same turn. Likewise, if the user asks you to rename the status file title, also rename the Claude session (ask them to run `/rename <new>`, or, if possible in this environment, do it for them). If only one side changed and you notice the mismatch, ask the user which name wins before propagating. The Session reference block is not affected — `claude_session` stays the same.
 
 ## 5. Delegation protocol
 
@@ -211,11 +250,35 @@ Silence is **not** confirmation. Don't auto-promote Done → Completed.
 
 ## 9. Session lifecycle
 
-- **Start**: confirm `$STATUS_FILE` path, initialize/augment file, post one line to user: `Orchestrating via <path>. Ready.`
+- **Start**: confirm `$STATUS_FILE` path, initialize/augment file, **write or verify the Session reference block (§1, §3)**, post one line to user: `Orchestrating via <path>. Ready.`
 - **During**: as described above.
-- **End** (user says "done" / "wrap up" / closes session): update `Focus:` to `(session ended <timestamp>)`, ensure no tasks are still Active (move stragglers to Blocked with a note), post a one-line summary linking to the file.
+- **End** (user says "done" / "wrap up" / closes session): update `Focus:` to `(session ended <timestamp>)`, ensure no tasks are still Active (move stragglers to Blocked with a note), post a one-line summary linking to the file. Leave the Session reference block intact for later resume.
 
-## 10. Safety
+## 10. Resuming a prior session
+
+Two distinct forms of resume exist. Don't confuse them.
+
+### 10a. Resume the Claude Code conversation (preferred)
+
+The Session reference block at the head of `$STATUS_FILE` carries a `claude_session` UUID. The user can restore the exact prior conversation — with its full tool history — by running `/resume <uuid>` in Claude Code. They do not need this skill to do that; they just need to be able to find the UUID.
+
+Your job is to **keep the UUID correct at the head of the file** (see §1 discovery steps and §3 template) so the user can copy-paste it when they come back later.
+
+### 10b. Re-attach a new conversation to an existing status file
+
+If the user instead opens a *fresh* Claude Code conversation and wants to keep driving the same status file, re-attach:
+
+1. **Full path given** → use it as `$STATUS_FILE`.
+2. **Path pasted from the AI Status app** → same.
+3. **Neither** → ask the user for the full path. Do not guess.
+
+Once re-attached:
+
+- Read the Session reference block. If `claude_session` differs from the current conversation's ID, do **not** silently overwrite. Ask: *"The file is linked to Claude session `<old>`. Replace with the current session `<new>` for future `/resume`, or keep the old link?"*
+- Append to the Agent log: `- <HH:MM> re-attached to existing status file in new Claude conversation`.
+- Do not touch Active/Done/Completed rows — they carry forward as-is.
+
+## 11. Safety
 
 - Do not delete `$STATUS_FILE`. Do not truncate without preserving the user title/metadata at top.
 - Before destructive repo actions (git push, force-push, DB changes, shared-infra edits), confirm with the user regardless of skill rules — standard Claude Code safety still applies.
