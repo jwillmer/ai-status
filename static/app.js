@@ -770,7 +770,9 @@ async function loadConfig() {
  * ------------------------------------------------------------------------- */
 const THEME_ORDER = ["system", "light", "dark"];
 const THEME_ICONS = { system: "🖥️", light: "☀️", dark: "🌙" };
-const THEME_LABELS = { system: "System theme", light: "Light theme", dark: "Dark theme" };
+const THEME_LABELS = { system: "System", light: "Light", dark: "Dark" };
+const themeIconEl = $("#theme-icon");
+const themeLabelEl = $("#theme-label");
 
 function getTheme() {
   const m = document.cookie.match(/(?:^|;\s*)theme=([^;]+)/);
@@ -780,10 +782,9 @@ function getTheme() {
 function applyTheme(theme) {
   if (theme === "system") document.documentElement.removeAttribute("data-theme");
   else document.documentElement.setAttribute("data-theme", theme);
-  if (themeBtn) {
-    themeBtn.textContent = THEME_ICONS[theme];
-    themeBtn.title = THEME_LABELS[theme] + " — click to cycle";
-  }
+  if (themeIconEl) themeIconEl.textContent = THEME_ICONS[theme];
+  if (themeLabelEl) themeLabelEl.textContent = THEME_LABELS[theme];
+  if (themeBtn) themeBtn.title = THEME_LABELS[theme] + " theme — click to cycle";
 }
 function setTheme(theme) {
   // 1-year cookie so the choice survives browser restarts.

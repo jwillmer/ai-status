@@ -33,7 +33,6 @@
       <h1>AI Status</h1>
     </div>
     <div class="side-actions">
-      <button id="theme-btn" title="Theme (system / light / dark)" aria-label="Cycle theme">🖥️</button>
       <button id="notify-btn" title="Enable desktop notifications" aria-label="Toggle desktop notifications" aria-pressed="false">🔕</button>
       <button id="help-btn" title="What is this?" aria-label="Help">?</button>
       <button id="new-btn" title="New session">＋</button>
@@ -48,6 +47,12 @@
     <h2 class="arch-head">Archived <span id="arch-count"></span></h2>
     <ul id="list-archived" hidden></ul>
   </section>
+  <div class="side-foot">
+    <button id="theme-btn" title="Theme (system / light / dark)" aria-label="Cycle theme">
+      <span id="theme-icon">🖥️</span>
+      <span id="theme-label">System</span>
+    </button>
+  </div>
 </aside>
 <main>
   <header id="view-head" hidden>
