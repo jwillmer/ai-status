@@ -14,17 +14,19 @@ The user provides a path such as `C:\Projects\GitHub\ai\status-updates\sessions\
 - If the user has not provided a path, ask once. Do not proceed without one.
 - If the file does not exist, create it with the template below.
 - If it exists with user content (e.g. a title), preserve the title and append the orchestrator sections below it.
-- **Always record a Session reference block at the head of the file** (see §3). Its job is to capture the **Claude Code session ID** so the user can later run `/resume <id>` in Claude Code and pick up the exact conversation that was driving this status file.
+- **Always record a Session reference block at the head of the file** (see §3). It lives as **YAML front matter** — a `---`-fenced block at the very top — so it stays machine-readable but renders invisibly in the AI Status dashboard (the renderer uses `goldmark-meta` to consume it). Its job is to capture the **Claude Code session ID** so the user can later run `/resume <id>` in Claude Code and pick up the exact conversation that was driving this status file.
 
 ### Session reference block — what to capture
 
-Resolve these once at session start and write them into the file head:
+Resolve these once at session start and write them into the YAML front matter at the top of the file:
 
 - `claude_session` — the Claude Code session UUID for the current conversation. Used with `/resume <claude_session>` in Claude Code. See the discovery steps below.
 - `project_folder` — the project working directory for this Claude session (the `cwd` from platform context, not the `sessions/` directory). This is where the user was running Claude Code when the conversation started.
 - `created` — ISO timestamp of first initialization. Leave untouched on subsequent updates.
 
 Do not re-record the `$STATUS_FILE` filename or path in the block — the user already has both (they opened the file).
+
+Quote scalar values with single quotes (e.g. `project_folder: 'C:\Projects\GitHub\ai-status'`) so Windows backslashes and colons in timestamps parse as literal strings.
 
 ### How to discover the Claude Code session ID
 
@@ -116,26 +118,18 @@ Rules:
 
 ## 3. File shape
 
-Initialize `$STATUS_FILE` with this structure. Preserve any pre-existing `# Title` and `_Created ..._` line at the top.
+Initialize `$STATUS_FILE` with this structure. The YAML front matter is consumed by the AI Status renderer (`goldmark-meta`) and does not render as visible text. The AI Status app displays `title` + `focus` in its header, and the file mtime drives the "updated" pill — so none of those live as body lines.
+
+Preserve any pre-existing `# Title` at the top by moving it into the `title:` frontmatter field (and removing the `# Title` body line). If no title is set, omit the `title:` field — the app falls back to the filename stem.
 
 ```markdown
-# <existing title or "Session">
-
-_Created <existing timestamp>_
-
-<!-- status-orchestrator:session-ref
-claude_session: <session-uuid>
-project_folder: <project-cwd-where-claude-was-launched>
-created:        <ISO timestamp>
--->
-
-> **Resume in Claude Code:** `/resume <session-uuid>` · **Folder:** `<project-cwd>`
-
 ---
-
-**Updated:** <ISO local datetime>
-**Orchestrator:** Claude (status-orchestrator skill)
-**Focus:** <one-line current focus, or "(awaiting first request)">
+title: '<existing title or omit>'
+project_folder: '<project-cwd-where-claude-was-launched>'
+claude_session: '<session-uuid>'
+created: '<ISO timestamp>'
+focus: '<one-line current focus, or "(awaiting first request)">'
+---
 
 ## Active tasks
 
@@ -165,16 +159,18 @@ _(append-only, newest first)_
 _(free-form scratchpad — decisions, links, constraints)_
 ```
 
+A single-line `_Created <timestamp>_` italic is no longer emitted — that information lives in the `created:` YAML field. If an existing file still carries that italic line or a `<!-- status-orchestrator:session-ref ... -->` HTML block, migrate it on first edit: lift the values into YAML front matter, then delete the visible/legacy forms.
+
 ## 4. Rules for file updates
 
 - **Task IDs**: incrementing integers starting at 1. Never reuse.
 - **Timestamps**: use today's local date/time from the session's `currentDate` context.
-- **Bump `Updated:`** on every file change.
+- **Updated timestamp** is the file's mtime — you don't write it anywhere. Any edit bumps it automatically.
 - **Use `Edit`** for partial updates (faster, preserves diff context). Reserve `Write` for initial creation or structural rewrites.
 - **Move rows across sections on phase change**, never duplicate. A task exists in exactly one section at a time.
 - **Agent log is append-only newest-first.** Format: `- <HH:MM> <event> — <detail>`
 - **Idempotent updates**: if the file is missing a section, add it; don't assume structure is already correct.
-- **Never touch the Session reference block** (`<!-- status-orchestrator:session-ref ... -->` and the visible `> **Resume in Claude Code:** ...` line) once written. Add it if absent; otherwise leave it exactly as-is so resume lookups stay stable. The one field that *does* get touched, `claude_session`, is only changed under the §10b protocol.
+- **Never touch the Session reference block** (the YAML front matter at the top of the file) once written. Add it if absent; otherwise leave it exactly as-is so resume lookups stay stable. The one field that *does* get touched, `claude_session`, is only changed under the §10b protocol.
 - **Title sync with Claude session rename.** The `# <title>` at the top of `$STATUS_FILE` and the Claude Code session title are the same thing and must not drift. When the user runs `/rename <new>` in Claude Code — or asks you to rename the session — update the `# <title>` line to match the new name in the same turn. Likewise, if the user asks you to rename the status file title, also rename the Claude session (ask them to run `/rename <new>`, or, if possible in this environment, do it for them). If only one side changed and you notice the mismatch, ask the user which name wins before propagating. The Session reference block is not affected — `claude_session` stays the same.
 
 ## 5. Delegation protocol
@@ -218,7 +214,7 @@ When you receive a background-task completion notification, **review before acce
    - Implemented but not yet tested, or gap against quality bar → leave in Active with `status: needs <test|fix|doc>`, and either run the gap yourself (if trivial) or delegate a follow-up subagent.
    - Failed or unclear → move to **Blocked** with reason.
 4. Add `- <HH:MM> <agent> finished #<id>: <summary>` + phase-transition log line. If you sent it back, log that too.
-5. Bump `Updated:` and adjust `Focus:`.
+5. Adjust `focus:` in the YAML front matter (file mtime covers "updated").
 6. Post 1–2 lines to the user. When a task lands in Done, **ask for confirmation** explicitly: `#<id> done and tested: <summary>. Confirm to mark completed?`
 
 On user confirmation (`yes`, `looks good`, `confirmed`, `ship it`, etc.):
@@ -252,7 +248,7 @@ Silence is **not** confirmation. Don't auto-promote Done → Completed.
 
 - **Start**: confirm `$STATUS_FILE` path, initialize/augment file, **write or verify the Session reference block (§1, §3)**, post one line to user: `Orchestrating via <path>. Ready.`
 - **During**: as described above.
-- **End** (user says "done" / "wrap up" / closes session): update `Focus:` to `(session ended <timestamp>)`, ensure no tasks are still Active (move stragglers to Blocked with a note), post a one-line summary linking to the file. Leave the Session reference block intact for later resume.
+- **End** (user says "done" / "wrap up" / closes session): update `focus:` in the front matter to `(session ended <timestamp>)`, ensure no tasks are still Active (move stragglers to Blocked with a note), post a one-line summary linking to the file. Leave the session reference block intact for later resume.
 
 ## 10. Resuming a prior session
 
@@ -260,7 +256,7 @@ Two distinct forms of resume exist. Don't confuse them.
 
 ### 10a. Resume the Claude Code conversation (preferred)
 
-The Session reference block at the head of `$STATUS_FILE` carries a `claude_session` UUID. The user can restore the exact prior conversation — with its full tool history — by running `/resume <uuid>` in Claude Code. They do not need this skill to do that; they just need to be able to find the UUID.
+The YAML front matter at the head of `$STATUS_FILE` carries a `claude_session` UUID. The user can restore the exact prior conversation — with its full tool history — by running `/resume <uuid>` in Claude Code. They do not need this skill to do that; they just need to be able to find the UUID (AI Status exposes it; otherwise they can read the YAML block directly in any editor).
 
 Your job is to **keep the UUID correct at the head of the file** (see §1 discovery steps and §3 template) so the user can copy-paste it when they come back later.
 
@@ -274,7 +270,7 @@ If the user instead opens a *fresh* Claude Code conversation and wants to keep d
 
 Once re-attached:
 
-- Read the Session reference block. If `claude_session` differs from the current conversation's ID, do **not** silently overwrite. Ask: *"The file is linked to Claude session `<old>`. Replace with the current session `<new>` for future `/resume`, or keep the old link?"*
+- Read the YAML front matter at the top. If `claude_session` differs from the current conversation's ID, do **not** silently overwrite. Ask: *"The file is linked to Claude session `<old>`. Replace with the current session `<new>` for future `/resume`, or keep the old link?"*
 - Append to the Agent log: `- <HH:MM> re-attached to existing status file in new Claude conversation`.
 - Do not touch Active/Done/Completed rows — they carry forward as-is.
 

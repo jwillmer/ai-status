@@ -10,6 +10,12 @@ const viewUpdated = $("#view-updated");
 const viewEl = $("#view");
 const archBtn = $("#arch-btn");
 const delBtn = $("#del-btn");
+const showCmdBtn = $("#show-cmd-btn");
+const openCmdBtn = $("#open-cmd-btn");
+const openFileBtn = $("#open-file-btn");
+const metaToggleBtn = $("#meta-toggle-btn");
+const metaPanel = $("#meta-panel");
+const viewFocus = $("#view-focus");
 const newBtn = $("#new-btn");
 const helpBtn = $("#help-btn");
 const helpDialog = $("#help-dialog");
@@ -17,6 +23,30 @@ const helpClose = $("#help-close");
 const notifyBtn = $("#notify-btn");
 const archHead = document.querySelector(".arch-head");
 const connBanner = $("#conn-banner");
+
+const mainEl = document.querySelector("main");
+const splitEl = $("#split");
+const splitDivider = $("#split-divider");
+const termPanel = $("#term-panel");
+const termHead = $("#term-head");
+const termHost = $("#term-host");
+const termEmpty = $("#term-empty");
+const termStartBtn = $("#term-start-btn");
+const termResumeBtn = $("#term-resume-btn");
+const termKillBtn = $("#term-kill-btn");
+const termRestartBtn = $("#term-restart-btn");
+const termCloseBtn = $("#term-close-btn");
+const termFolderForm = $("#term-folder-form");
+const termFolderInput = $("#term-folder-input");
+
+const newDialog = $("#new-dialog");
+const newForm = $("#new-form");
+const newTitleInput = $("#new-title");
+const newFolderInput = $("#new-folder");
+const newFolderBrowse = $("#new-folder-browse");
+const newFolderPicker = $("#new-folder-picker");
+const newCancelBtn = $("#new-cancel");
+const newSkipBtn = $("#new-skip");
 
 let sessions = [];
 let currentId = null;
@@ -209,16 +239,82 @@ async function loadSessions() {
   }
 }
 
-async function createSession() {
-  const title = prompt("Session title?", "Session " + new Date().toLocaleString());
-  if (title === null) return;
-  const sess = await api("/api/sessions", {
-    method: "POST",
-    body: JSON.stringify({ title }),
+function openNewDialog() {
+  if (!newDialog) return;
+  newTitleInput.value = "Session " + new Date().toLocaleString();
+  newFolderInput.value = "";
+  // Select title text so user can immediately overtype
+  queueMicrotask(() => {
+    newTitleInput.focus();
+    newTitleInput.select();
   });
-  sessions.unshift(sess);
-  renderList();
-  openSession(sess.id);
+  if (typeof newDialog.showModal === "function") newDialog.showModal();
+  else newDialog.setAttribute("open", "");
+}
+
+async function submitNewSession(includeFolder) {
+  const title = (newTitleInput.value || "").trim();
+  if (!title) { newTitleInput.focus(); return; }
+  const body = { title };
+  if (includeFolder) {
+    const folder = (newFolderInput.value || "").trim();
+    if (folder) body.folder = folder;
+  }
+  try {
+    const sess = await api("/api/sessions", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    sessions.unshift(sess);
+    newDialog.close();
+    renderList();
+    openSession(sess.id);
+  } catch (e) {
+    alert("Create failed: " + e.message);
+  }
+}
+
+function createSession() {
+  openNewDialog();
+}
+
+if (newForm) {
+  newForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    submitNewSession(true);
+  });
+}
+if (newCancelBtn) newCancelBtn.onclick = () => newDialog.close();
+if (newSkipBtn) newSkipBtn.onclick = () => submitNewSession(false);
+if (newFolderBrowse && newFolderPicker) {
+  newFolderBrowse.onclick = () => newFolderPicker.click();
+  newFolderPicker.addEventListener("change", () => {
+    const files = newFolderPicker.files;
+    if (!files || !files.length) return;
+    // webkitdirectory only gives us the relative folder name — no absolute path.
+    // Hint the user by filling in just the folder name so they can prepend the
+    // absolute parent path themselves.
+    const rel = files[0].webkitRelativePath || "";
+    const folderName = rel.split("/")[0] || "";
+    if (folderName && !newFolderInput.value) {
+      newFolderInput.value = folderName;
+      newFolderInput.focus();
+      // Select the whole field so the user can prepend the absolute path
+      newFolderInput.setSelectionRange(0, newFolderInput.value.length);
+    }
+    newFolderPicker.value = "";
+  });
+}
+if (newDialog) {
+  // Click outside to close
+  newDialog.addEventListener("click", (e) => {
+    if (e.target === newDialog) {
+      const r = newDialog.getBoundingClientRect();
+      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) {
+        newDialog.close();
+      }
+    }
+  });
 }
 
 function closeStream() {
@@ -229,6 +325,7 @@ function applyUpdate(data) {
   try {
     const payload = typeof data === "string" ? JSON.parse(data) : data;
     viewEl.innerHTML = payload.html || '<div class="empty">(empty file)</div>';
+    if (typeof payload.focus === "string") updateFocus(payload.focus);
     currentUpdated = payload.updated ? new Date(payload.updated) : new Date();
     updateUpdatedPill();
     // reflect in sidebar model
@@ -301,12 +398,18 @@ function openSession(id) {
   archBtn.textContent = s.archived ? "Unarchive" : "Archive";
   currentUpdated = s.updated ? new Date(s.updated) : null;
   updateUpdatedPill();
+  updateFocus(s.focus);
+  updateOpenCmdVisibility();
+  updateMetaPanelVisibility();
   renderList();
   viewEl.innerHTML = '<div class="empty">Loading…</div>';
 
   es = new EventSource(`/api/sessions/${id}/stream`);
   es.addEventListener("update", (e) => applyUpdate(e.data));
   es.onerror = () => { /* browser auto-reconnects */ };
+
+  showTerminalFor(id);
+  updateCmdCollapse();
 }
 
 async function toggleArchive() {
@@ -328,13 +431,35 @@ async function deleteSession() {
   if (!s) return;
   if (!confirm(`Delete "${s.title}"? The .md file will be removed.`)) return;
   await api(`/api/sessions/${currentId}`, { method: "DELETE" });
-  sessions = sessions.filter(x => x.id !== currentId);
+  const deletedId = currentId;
+  sessions = sessions.filter(x => x.id !== deletedId);
   closeStream();
   currentId = null;
   viewHead.hidden = true;
   viewEl.innerHTML = '<div class="empty">Select or create a session.</div>';
   setDocTitle(null);
+  // Tear down terminal for this session if any
+  const entry = termEntry(deletedId);
+  if (entry) {
+    try { if (entry.ws) entry.ws.close(); } catch {}
+    try { entry.term.dispose(); } catch {}
+    try { entry.div.remove(); } catch {}
+    terminals.delete(deletedId);
+  }
+  metaCache.delete(deletedId);
+  if (currentTermId === deletedId) {
+    currentTermId = null;
+    hideAllTerminals();
+    if (termEmpty) termEmpty.hidden = false;
+    termFolderForm.hidden = true;
+    termStartBtn.hidden = true;
+    termResumeBtn.hidden = true;
+    termKillBtn.hidden = true;
+    termRestartBtn.hidden = true;
+    termCloseBtn.hidden = true;
+  }
   renderList();
+  updateCmdCollapse();
 }
 
 async function copyPath() {
@@ -621,3 +746,518 @@ document.addEventListener("keydown", (e) => {
 });
 
 loadSessions();
+// Initial collapse state — before any session is opened, collapse cmd column.
+document.body.classList.add("cmd-collapsed");
+
+/* ---------------------------------------------------------------------------
+ * Split divider — drag between cmd column and doc column
+ * ------------------------------------------------------------------------- */
+const SPLIT_KEY = "splitRatio";
+function applySplitRatio(ratio) {
+  // ratio is the fraction (0..1) occupied by the cmd column within #split
+  const clamped = Math.min(0.85, Math.max(0.15, ratio));
+  if (splitEl) splitEl.style.setProperty("--cmd-w", (clamped * 100).toFixed(3) + "%");
+}
+(function initSplit() {
+  const stored = parseFloat(localStorage.getItem(SPLIT_KEY));
+  applySplitRatio(Number.isFinite(stored) ? stored : 0.45);
+})();
+
+let splitDragging = false;
+if (splitDivider) {
+  splitDivider.addEventListener("mousedown", (e) => {
+    splitDragging = true;
+    splitDivider.classList.add("dragging");
+    document.body.classList.add("dragging");
+    e.preventDefault();
+  });
+  window.addEventListener("mousemove", (e) => {
+    if (!splitDragging) return;
+    const rect = (splitEl || mainEl).getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const ratio = x / rect.width;
+    applySplitRatio(ratio);
+  });
+  window.addEventListener("mouseup", () => {
+    if (!splitDragging) return;
+    splitDragging = false;
+    splitDivider.classList.remove("dragging");
+    document.body.classList.remove("dragging");
+    // Persist current ratio from the computed style
+    const cur = getComputedStyle(splitEl || mainEl).getPropertyValue("--cmd-w").trim();
+    const pct = parseFloat(cur);
+    if (Number.isFinite(pct)) localStorage.setItem(SPLIT_KEY, (pct / 100).toFixed(4));
+    scheduleTermFit();
+  });
+}
+
+/* ---------------------------------------------------------------------------
+ * Per-session terminal manager
+ * ------------------------------------------------------------------------- */
+const terminals = new Map(); // sessionID -> { term, fit, div, ws, running, exited, folder, claudeSession }
+const metaCache = new Map(); // sessionID -> { folder, claudeSession }
+let currentTermId = null;
+
+const TermCtor = (typeof window !== "undefined") ? window.Terminal : null;
+const FitCtor = (typeof window !== "undefined" && window.FitAddon) ? window.FitAddon.FitAddon : null;
+
+function termEntry(id) { return terminals.get(id); }
+
+function createTerminalEntry(id) {
+  if (!TermCtor) return null;
+  const div = document.createElement("div");
+  div.className = "term-instance hidden";
+  div.dataset.id = id;
+  termHost.appendChild(div);
+
+  const term = new TermCtor({
+    cursorBlink: true,
+    fontFamily: "Consolas, Menlo, monospace",
+    fontSize: 13,
+    theme: { background: "#0b0d13", foreground: "#e6e8ec" },
+    scrollback: 5000,
+    convertEol: false,
+  });
+  const fit = FitCtor ? new FitCtor() : null;
+  if (fit) term.loadAddon(fit);
+  term.open(div);
+
+  const entry = {
+    term, fit, div,
+    ws: null,
+    running: false,
+    exited: false,
+    visible: false, // user explicitly revealed cmd for this session (Start/Resume/Show cmd)
+    folder: "",
+    claudeSession: "",
+    bootCommand: null, // set when starting
+  };
+  terminals.set(id, entry);
+
+  term.onData((data) => {
+    if (entry.ws && entry.ws.readyState === 1) {
+      entry.ws.send(new TextEncoder().encode(data));
+    }
+  });
+  term.onResize(({ cols, rows }) => {
+    if (entry.ws && entry.ws.readyState === 1) {
+      try { entry.ws.send(JSON.stringify({ type: "resize", cols, rows })); } catch {}
+    }
+  });
+  return entry;
+}
+
+function hideAllTerminals() {
+  for (const [, e] of terminals) e.div.classList.add("hidden");
+}
+
+function showTerminalFor(id) {
+  currentTermId = id;
+  hideAllTerminals();
+  let entry = termEntry(id);
+  if (!entry) entry = createTerminalEntry(id);
+  if (entry) {
+    entry.div.classList.remove("hidden");
+    if (termEmpty) termEmpty.hidden = true;
+    scheduleTermFit();
+  }
+  // Fetch fresh meta and refresh run status. Do NOT auto-attach a WebSocket
+  // or auto-expand the cmd column when a PTY is running from a prior tab —
+  // the column stays collapsed until the user explicitly clicks Show cmd,
+  // Start cmd, or Resume.
+  refreshMeta(id).then(async () => {
+    await refreshStatus(id);
+    updateTermHead(id);
+    updateCmdCollapse();
+  });
+}
+
+async function refreshMeta(id) {
+  try {
+    const meta = await api(`/api/sessions/${id}/meta`);
+    metaCache.set(id, {
+      folder: meta.folder || "",
+      claudeSession: meta.claudeSession || "",
+      focus: meta.focus || "",
+      metadata: meta.metadata || [],
+    });
+    const e = termEntry(id);
+    if (e) {
+      e.folder = meta.folder || "";
+      e.claudeSession = meta.claudeSession || "";
+    }
+    if (id === currentId) {
+      updateFocus(meta.focus || "");
+      updateOpenCmdVisibility();
+      updateMetaPanelVisibility();
+    }
+    return meta;
+  } catch (err) {
+    // Fall back to the session list fields if meta endpoint fails
+    const s = sessions.find(x => x.id === id);
+    const fallback = { folder: (s && s.folder) || "", claudeSession: (s && s.claudeSession) || "", focus: (s && s.focus) || "", metadata: [] };
+    metaCache.set(id, fallback);
+    const e = termEntry(id);
+    if (e) { e.folder = fallback.folder; e.claudeSession = fallback.claudeSession; }
+    return fallback;
+  }
+}
+
+async function refreshStatus(id) {
+  try {
+    const st = await api(`/api/terminal/${id}/status`);
+    const e = termEntry(id);
+    if (e) {
+      e.running = !!st.running;
+      if (!st.running) e.exited = st.exitCode != null;
+      e.folder = st.folder || e.folder || "";
+      e.claudeSession = st.claudeSession || e.claudeSession || "";
+    }
+    return st;
+  } catch {
+    return null;
+  }
+}
+
+function updateTermHead(id) {
+  const s = sessions.find(x => x.id === id);
+  const entry = termEntry(id);
+  const meta = metaCache.get(id) || { folder: "", claudeSession: "" };
+  const folder = (entry && entry.folder) || meta.folder || "";
+  const claudeSession = (entry && entry.claudeSession) || meta.claudeSession || "";
+  const running = !!(entry && entry.running);
+  const exited = !!(entry && entry.exited);
+
+  // Folder form: shown only when no folder set
+  const showFolderForm = !!s && !folder;
+  termFolderForm.hidden = !showFolderForm;
+  if (showFolderForm) termFolderInput.value = "";
+
+  // Buttons
+  const canStart = !!s && !!folder && !running;
+  const canResume = !!s && !!folder && !!claudeSession && !running;
+  termStartBtn.hidden = !canStart || exited;
+  termResumeBtn.hidden = !canResume || exited;
+  termKillBtn.hidden = !running;
+  termRestartBtn.hidden = !exited || running;
+  termCloseBtn.hidden = !exited || running;
+}
+
+/* ----- Actions ----- */
+
+async function startTerminal(id, command) {
+  const entry = termEntry(id) || createTerminalEntry(id);
+  if (!entry) return;
+  // Size: use fit addon proposal if available, else fallback
+  let cols = 80, rows = 24;
+  if (entry.fit) {
+    try {
+      entry.fit.fit();
+      cols = entry.term.cols || cols;
+      rows = entry.term.rows || rows;
+    } catch {}
+  }
+  entry.exited = false;
+  entry.bootCommand = command || null;
+  entry.visible = true;
+  try {
+    const body = { cols, rows };
+    if (command) body.command = command;
+    await api(`/api/terminal/${id}`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  } catch (e) {
+    alert("Failed to start terminal: " + e.message);
+    return;
+  }
+  entry.running = true;
+  openTerminalSocket(id);
+  updateTermHead(id);
+  updateCmdCollapse();
+}
+
+function openTerminalSocket(id) {
+  const entry = termEntry(id);
+  if (!entry) return;
+  if (entry.ws) {
+    try { entry.ws.close(); } catch {}
+    entry.ws = null;
+  }
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${proto}//${location.host}/ws/terminal/${id}`);
+  ws.binaryType = "arraybuffer";
+  entry.ws = ws;
+
+  ws.addEventListener("open", () => {
+    // Send initial resize
+    try {
+      if (entry.fit) entry.fit.fit();
+      const cols = entry.term.cols, rows = entry.term.rows;
+      ws.send(JSON.stringify({ type: "resize", cols, rows }));
+    } catch {}
+  });
+  ws.addEventListener("message", (ev) => {
+    if (typeof ev.data === "string") {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      if (msg && msg.type === "exit") {
+        entry.running = false;
+        entry.exited = true;
+        try { entry.term.writeln(`\r\n\x1b[90m[process exited with code ${msg.code}]\x1b[0m`); } catch {}
+        if (id === currentTermId) {
+          updateTermHead(id);
+          updateCmdCollapse();
+        }
+      }
+    } else {
+      try { entry.term.write(new Uint8Array(ev.data)); } catch {}
+    }
+  });
+  ws.addEventListener("close", () => {
+    entry.ws = null;
+    // If we thought it was running but the socket closed, re-check status
+    if (entry.running) {
+      refreshStatus(id).then(() => {
+        if (id === currentTermId) updateTermHead(id);
+      });
+    }
+  });
+  ws.addEventListener("error", () => { /* close handler will follow */ });
+}
+
+async function killTerminal(id) {
+  try {
+    await api(`/api/terminal/${id}`, { method: "DELETE" });
+  } catch (e) {
+    alert("Kill failed: " + e.message);
+  }
+}
+
+function closeExitedTerminal(id) {
+  const entry = termEntry(id);
+  if (!entry) return;
+  try { entry.term.dispose(); } catch {}
+  try { entry.div.remove(); } catch {}
+  terminals.delete(id);
+  if (id === currentTermId) {
+    if (termEmpty) termEmpty.hidden = false;
+    updateTermHead(id);
+  }
+  updateCmdCollapse();
+}
+
+function startCmdForCurrent() {
+  if (!currentTermId) return;
+  const s = sessions.find(x => x.id === currentTermId);
+  if (!s) return;
+  const mdPath = s.path || "";
+  const cmd = mdPath
+    ? `claude "Use this for status: ${mdPath}"`
+    : `claude`;
+  startTerminal(currentTermId, cmd);
+}
+
+function resumeClaudeForCurrent() {
+  if (!currentTermId) return;
+  const entry = termEntry(currentTermId);
+  const meta = metaCache.get(currentTermId);
+  const uuid = (entry && entry.claudeSession) || (meta && meta.claudeSession) || "";
+  if (!uuid) return;
+  startTerminal(currentTermId, `claude --resume ${uuid}`);
+}
+
+if (termStartBtn) termStartBtn.onclick = startCmdForCurrent;
+if (termResumeBtn) termResumeBtn.onclick = resumeClaudeForCurrent;
+if (termKillBtn) termKillBtn.onclick = () => { if (currentTermId) killTerminal(currentTermId); };
+if (termRestartBtn) termRestartBtn.onclick = () => {
+  if (!currentTermId) return;
+  const entry = termEntry(currentTermId);
+  if (!entry) return;
+  // Prefer `/resume` when the md already carries a claude_session UUID — that
+  // matches the user's intent ("pick up where we left off"). Fall back to the
+  // last boot command, then to a fresh `claude "Use this for status: …"`.
+  const meta = metaCache.get(currentTermId);
+  const uuid = (entry.claudeSession) || (meta && meta.claudeSession) || "";
+  const s = sessions.find(x => x.id === currentTermId);
+  const mdPath = (s && s.path) || "";
+  let cmd;
+  if (uuid) cmd = `claude --resume ${uuid}`;
+  else if (entry.bootCommand) cmd = entry.bootCommand;
+  else if (mdPath) cmd = `claude "Use this for status: ${mdPath}"`;
+  else cmd = "claude";
+  entry.exited = false;
+  try { entry.term.clear(); } catch {}
+  startTerminal(currentTermId, cmd);
+};
+if (termCloseBtn) termCloseBtn.onclick = () => { if (currentTermId) closeExitedTerminal(currentTermId); };
+
+if (termFolderForm) {
+  termFolderForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!currentTermId) return;
+    const folder = (termFolderInput.value || "").trim();
+    if (!folder) { termFolderInput.focus(); return; }
+    try {
+      await api(`/api/sessions/${currentTermId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ folder }),
+      });
+      const s = sessions.find(x => x.id === currentTermId);
+      if (s) s.folder = folder;
+      await refreshMeta(currentTermId);
+      updateTermHead(currentTermId);
+      updateCmdCollapse();
+    } catch (err) {
+      alert("Save folder failed: " + err.message);
+    }
+  });
+}
+
+/* ----- Collapse cmd column when no xterm instance exists ----- */
+
+function updateCmdCollapse() {
+  // Rule: cmd column visible iff the user has explicitly revealed it for the
+  // current session (entry.visible). Opening a session never auto-expands,
+  // even if a PTY from a prior tab is still running in the backend.
+  const entry = currentId ? termEntry(currentId) : null;
+  const shouldCollapse = !currentId || !entry || !entry.visible;
+  const was = document.body.classList.contains("cmd-collapsed");
+  document.body.classList.toggle("cmd-collapsed", shouldCollapse);
+
+  // Show the "▶ Show cmd" button when collapsed AND either a folder is set
+  // (so Start/Resume can proceed) OR a background PTY is already running
+  // for this session (so the button reattaches).
+  if (showCmdBtn) {
+    const s = currentId ? sessions.find(x => x.id === currentId) : null;
+    const meta = currentId ? metaCache.get(currentId) : null;
+    const folder = (entry && entry.folder) || (meta && meta.folder) || (s && s.folder) || "";
+    const hasBgPty = !!(entry && entry.running);
+    showCmdBtn.hidden = !shouldCollapse || (!folder && !hasBgPty);
+  }
+
+  if (was !== shouldCollapse) scheduleTermFit();
+}
+
+if (showCmdBtn) {
+  showCmdBtn.onclick = () => {
+    if (!currentId) return;
+    const e = termEntry(currentId) || createTerminalEntry(currentId);
+    if (!e) return;
+    e.visible = true;
+    if (e.running && !e.ws) {
+      // PTY already alive in backend — just reattach without spawning a new one.
+      openTerminalSocket(currentId);
+      updateTermHead(currentId);
+      updateCmdCollapse();
+      return;
+    }
+    // No running PTY: fall through to the normal Start cmd flow.
+    startCmdForCurrent();
+  };
+}
+
+if (openFileBtn) {
+  openFileBtn.onclick = async () => {
+    if (!currentId) return;
+    try {
+      await api(`/api/sessions/${currentId}/open`, { method: "POST" });
+    } catch (e) {
+      alert("Open failed: " + e.message);
+    }
+  };
+}
+
+if (openCmdBtn) {
+  openCmdBtn.onclick = async () => {
+    if (!currentId) return;
+    try {
+      await api(`/api/sessions/${currentId}/open-cmd`, { method: "POST" });
+    } catch (e) {
+      alert("Open cmd failed: " + e.message);
+    }
+  };
+}
+
+function updateFocus(text) {
+  if (!viewFocus) return;
+  const t = (text || "").trim();
+  viewFocus.textContent = t;
+  viewFocus.hidden = !t;
+}
+
+function updateOpenCmdVisibility() {
+  if (!openCmdBtn) return;
+  if (!currentId) { openCmdBtn.hidden = true; return; }
+  const s = sessions.find(x => x.id === currentId);
+  const meta = metaCache.get(currentId);
+  const folder = (meta && meta.folder) || (s && s.folder) || "";
+  openCmdBtn.hidden = !folder;
+}
+
+const META_SHOWN_KEY = "meta_panel_shown";
+let metaShown = localStorage.getItem(META_SHOWN_KEY) === "1";
+
+function renderMetaPanel(meta) {
+  if (!metaPanel) return;
+  metaPanel.innerHTML = "";
+  if (!meta || !meta.length) {
+    const n = document.createElement("div");
+    n.className = "v";
+    n.textContent = "(no frontmatter)";
+    n.style.gridColumn = "1 / -1";
+    metaPanel.appendChild(n);
+    return;
+  }
+  for (const row of meta) {
+    const k = document.createElement("div");
+    k.className = "k";
+    k.textContent = row.key;
+    const v = document.createElement("div");
+    v.className = "v";
+    v.textContent = row.value;
+    metaPanel.appendChild(k);
+    metaPanel.appendChild(v);
+  }
+}
+
+function updateMetaPanelVisibility() {
+  if (!metaPanel || !metaToggleBtn) return;
+  metaPanel.hidden = !metaShown || !currentId;
+  metaToggleBtn.setAttribute("aria-pressed", metaShown ? "true" : "false");
+  if (metaShown && currentId) {
+    const meta = metaCache.get(currentId);
+    renderMetaPanel(meta && meta.metadata);
+  }
+}
+
+if (metaToggleBtn) {
+  metaToggleBtn.onclick = () => {
+    metaShown = !metaShown;
+    localStorage.setItem(META_SHOWN_KEY, metaShown ? "1" : "0");
+    updateMetaPanelVisibility();
+  };
+}
+
+/* ----- Resize / fit ----- */
+
+let fitTimer = null;
+function scheduleTermFit() {
+  if (fitTimer) clearTimeout(fitTimer);
+  fitTimer = setTimeout(() => {
+    fitTimer = null;
+    const entry = currentTermId ? termEntry(currentTermId) : null;
+    if (entry && entry.fit && !entry.div.classList.contains("hidden")) {
+      try { entry.fit.fit(); } catch {}
+    }
+  }, 100);
+}
+window.addEventListener("resize", scheduleTermFit);
+
+window.addEventListener("beforeunload", () => {
+  for (const [, e] of terminals) {
+    try { if (e.ws) e.ws.close(); } catch {}
+    try { e.term.dispose(); } catch {}
+  }
+  terminals.clear();
+});

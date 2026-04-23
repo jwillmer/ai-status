@@ -123,14 +123,120 @@ main { grid-area: main; }
 #search:focus { border-color: var(--accent); }
 main {
   overflow: hidden;
-  display: flex; flex-direction: column;
+  display: flex;
+  flex-direction: column;
   min-width: 0;
+  min-height: 0;
 }
+#split {
+  flex: 1; min-height: 0; min-width: 0;
+  display: grid;
+  grid-template-columns: var(--cmd-w, 45%) 6px 1fr;
+  grid-template-rows: 1fr;
+}
+body.cmd-collapsed #split {
+  grid-template-columns: 1fr;
+}
+body.cmd-collapsed #cmd-col,
+body.cmd-collapsed #split-divider { display: none; }
+#cmd-col {
+  grid-column: 1; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column;
+  background: var(--panel-2);
+  border-right: 1px solid var(--border);
+  overflow: hidden;
+}
+#split-divider {
+  grid-column: 2;
+  background: var(--border);
+  cursor: col-resize;
+  position: relative;
+  transition: background .12s;
+}
+#split-divider:hover, #split-divider.dragging { background: var(--accent); }
+#split-divider::after {
+  content: ""; position: absolute; inset: 0 -3px;
+}
+body.dragging, body.dragging * { user-select: none; cursor: col-resize !important; }
+#doc-col {
+  grid-column: 3; min-width: 0; min-height: 0;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+/* Terminal panel */
+#term-panel {
+  flex: 1; display: flex; flex-direction: column; min-height: 0;
+  background: var(--panel-2);
+  position: relative;
+}
+#term-head {
+  padding: 6px 10px; border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  display: flex; align-items: center; justify-content: flex-start; gap: 12px;
+  min-height: 36px;
+}
+.term-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.term-actions button {
+  background: var(--panel-2); color: var(--fg); border: 1px solid var(--border);
+  padding: 5px 10px; border-radius: 6px; cursor: pointer; font-size: 12px;
+}
+.term-actions button:hover { border-color: var(--accent); color: var(--accent); }
+.term-actions button.danger:hover { border-color: var(--danger); color: var(--danger); }
+#term-folder-form {
+  display: flex; gap: 6px; align-items: center;
+  padding: 8px 14px; border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  font-size: 12px; color: var(--muted);
+}
+#term-folder-form[hidden] { display: none; }
+#term-folder-form label { white-space: nowrap; }
+#term-folder-form input {
+  flex: 1; min-width: 0;
+  background: var(--code-bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 5px 8px; font: inherit; font-size: 12px;
+  font-family: Consolas, Menlo, monospace;
+}
+#term-folder-form input:focus { border-color: var(--accent); outline: none; }
+#term-folder-form button {
+  background: var(--accent); color: #0f1115; border: 0;
+  padding: 5px 12px; border-radius: 6px; cursor: pointer; font-weight: 600; font-size: 12px;
+}
+#term-folder-form button:hover { background: var(--accent-hover); }
+#term-host {
+  flex: 1; min-height: 0; position: relative;
+  background: #0b0d13;
+  overflow: hidden;
+}
+#term-host .term-instance {
+  position: absolute; inset: 0;
+  padding: 6px 0 6px 8px;
+}
+#term-host .term-instance.hidden { display: none; }
+#term-host .xterm { height: 100%; }
+.term-empty {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--muted); font-size: 13px; pointer-events: none;
+}
+.term-empty[hidden] { display: none; }
+
 #view-head {
   padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--panel);
 }
 .title-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.title-block { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.view-focus {
+  font-size: 12px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  padding: 0 4px;
+}
+.view-focus::before { content: "Focus: "; color: var(--accent); font-weight: 600; }
+.view-focus[hidden] { display: none; }
 #view-title { margin: 0; font-size: 18px; cursor: text; padding: 2px 4px; border-radius: 4px; }
+
+/* Title in the app header is already the session identity — hide the first
+   H1 in the rendered body so it doesn't duplicate. */
+.md > h1:first-child { display: none; }
 #view-title:hover { background: var(--panel-2); }
 #view-title[contenteditable="true"] {
   background: var(--code-bg); outline: 1px solid var(--accent);
@@ -166,6 +272,21 @@ main {
 .path.copied { border-color: var(--ok); color: var(--ok); }
 .path.copied::after { content: " ✓ copied"; font-weight: 600; }
 
+#meta-toggle-btn[aria-pressed="true"] {
+  border-color: var(--accent); color: var(--accent);
+}
+#meta-panel {
+  margin-top: 10px;
+  background: var(--code-bg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 8px 12px;
+  font-family: Consolas, Menlo, monospace; font-size: 12px;
+  color: var(--muted);
+  display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px;
+}
+#meta-panel[hidden] { display: none; }
+#meta-panel .k { color: var(--accent); font-weight: 600; }
+#meta-panel .v { color: var(--fg); word-break: break-all; }
+
 #view {
   flex: 1; overflow: auto; padding: 28px 40px;
   max-width: 100%;
@@ -198,6 +319,20 @@ main {
 .md th { background: var(--panel); }
 .md hr { border: 0; border-top: 1px solid var(--border); margin: 1.5em 0; }
 .md input[type=checkbox] { margin-right: 6px; }
+
+/* "What changed since last update" highlight. Server tags block elements
+   whose plain-text content appeared since the previous version with
+   class="md-new". Highlight persists until the next update replaces the
+   HTML — no fade. Amber (#ffc448) contrasts the blue accent theme so the
+   diff reads as a distinct "new" signal, not just another UI element. */
+.md .md-new {
+  background: rgba(255, 196, 72, 0.12);
+  border-left: 3px solid #ffc448;
+  padding-left: 10px;
+  margin-left: -13px;
+  border-radius: 2px;
+  box-shadow: 0 0 0 1px rgba(255, 196, 72, 0.18);
+}
 #arch-count { font-weight: 400; opacity: .7; }
 
 /* help dialog */
@@ -240,3 +375,45 @@ main {
   transition: background .15s;
 }
 .dl-btn:hover { background: var(--accent-hover); }
+
+/* new-session dialog */
+#new-dialog {
+  background: var(--panel); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 12px; padding: 0; max-width: 520px; width: calc(100% - 40px);
+  box-shadow: 0 20px 60px rgba(0,0,0,.5);
+}
+#new-dialog::backdrop { background: rgba(0,0,0,.6); backdrop-filter: blur(2px); }
+.new-body { padding: 20px 24px 20px; display: flex; flex-direction: column; gap: 8px; }
+.new-body h2 { margin: 0 0 8px; font-size: 18px; }
+.new-body label {
+  font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px;
+  margin-top: 6px;
+}
+.new-body input[type=text] {
+  background: var(--code-bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; font: inherit;
+  font-family: Consolas, Menlo, monospace; font-size: 13px;
+}
+.new-body input[type=text]:focus { border-color: var(--accent); outline: none; }
+.folder-row { display: flex; gap: 6px; }
+.folder-row input[type=text] { flex: 1; min-width: 0; }
+.folder-row button {
+  background: var(--panel-2); color: var(--fg); border: 1px solid var(--border);
+  padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 12px;
+}
+.folder-row button:hover { border-color: var(--accent); color: var(--accent); }
+.new-body .hint { font-size: 11px; color: var(--muted); margin: 4px 0 0; }
+.new-actions {
+  display: flex; gap: 8px; justify-content: flex-end;
+  margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);
+}
+.new-actions button {
+  background: var(--panel-2); color: var(--fg); border: 1px solid var(--border);
+  padding: 7px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
+}
+.new-actions button:hover { border-color: var(--accent); color: var(--accent); }
+#new-create {
+  background: var(--accent); color: #0f1115; border-color: var(--accent); font-weight: 600;
+}
+#new-create:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #0f1115; }

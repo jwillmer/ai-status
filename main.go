@@ -12,11 +12,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/atotto/clipboard"
@@ -27,6 +30,7 @@ import (
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer/html"
+	meta "github.com/yuin/goldmark-meta"
 )
 
 //go:embed static
@@ -224,21 +228,28 @@ func slug(s string) string {
 }
 
 var md = goldmark.New(
-	goldmark.WithExtensions(extension.GFM, extension.Typographer),
+	goldmark.WithExtensions(extension.GFM, extension.Typographer, meta.Meta),
 	goldmark.WithParserOptions(parser.WithAutoHeadingID()),
 	goldmark.WithRendererOptions(html.WithUnsafe()),
 )
 
 func renderMD(path string) (string, error) {
+	out, _, err := renderMDWithSource(path)
+	return out, err
+}
+
+// renderMDWithSource renders the markdown file and also returns the raw
+// source, so callers can diff it against a cached previous version.
+func renderMDWithSource(path string) (string, string, error) {
 	src, err := os.ReadFile(path)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var buf strings.Builder
 	if err := md.Convert(src, &buf); err != nil {
-		return "", err
+		return "", "", err
 	}
-	return buf.String(), nil
+	return buf.String(), string(src), nil
 }
 
 func fileModTime(path string) time.Time {
@@ -248,16 +259,31 @@ func fileModTime(path string) time.Time {
 	return time.Time{}
 }
 
-// buildUpdate returns a JSON string with rendered HTML + file mtime.
-func buildUpdate(path string) string {
-	htmlOut, err := renderMD(path)
+// buildUpdate returns a JSON string with rendered HTML + file mtime. When
+// prev has a cached previous version for sessionID, new-lines are marked
+// in the HTML output and hasDiff is set. The cache is updated with the
+// current source so the next call diffs against it.
+func buildUpdate(path, sessionID string, prev *prevCache) string {
+	htmlOut, src, err := renderMDWithSource(path)
 	if err != nil {
 		return ""
 	}
-	b, _ := json.Marshal(map[string]any{
-		"html":    htmlOut,
+	_, _, focus, _ := parseSessionMeta(path)
+	payload := map[string]any{
 		"updated": fileModTime(path),
-	})
+		"focus":   focus,
+	}
+	if prev != nil && sessionID != "" {
+		if old, ok := prev.get(sessionID); ok {
+			if set := newLines(old, src); len(set) > 0 {
+				htmlOut = markHTML(htmlOut, set)
+				payload["hasDiff"] = true
+			}
+		}
+		prev.set(sessionID, src)
+	}
+	payload["html"] = htmlOut
+	b, _ := json.Marshal(payload)
 	return string(b)
 }
 
@@ -288,19 +314,27 @@ func buildGlobalEvent(sess Session, path string) string {
 }
 
 func sessionWithUpdated(s Session) map[string]any {
+	folder, claudeSession, focus, _ := parseSessionMeta(s.Path)
 	return map[string]any{
-		"id":       s.ID,
-		"title":    titleFor(s),
-		"path":     s.Path,
-		"created":  s.Created,
-		"archived": s.Archived,
-		"pinned":   s.Pinned,
-		"updated":  fileModTime(s.Path),
+		"id":            s.ID,
+		"title":         titleFor(s),
+		"path":          s.Path,
+		"created":       s.Created,
+		"archived":      s.Archived,
+		"pinned":        s.Pinned,
+		"updated":       fileModTime(s.Path),
+		"folder":        folder,
+		"claudeSession": claudeSession,
+		"focus":         focus,
 	}
 }
 
 // fileTitle returns the first `# heading` line in the given markdown file,
-// or "" if none is found within the first few kilobytes.
+// or "" if none is found within the first few kilobytes. YAML front matter
+// (`---`-fenced block at the top) is skipped so fields like `title:` inside
+// it cannot false-match.
+var titleLineRe = regexp.MustCompile(`(?m)^\s*title:\s*(.*?)\s*$`)
+
 func fileTitle(path string) string {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -309,7 +343,20 @@ func fileTitle(path string) string {
 	if len(data) > 8192 {
 		data = data[:8192]
 	}
-	for _, raw := range strings.Split(string(data), "\n") {
+	s := string(data)
+	// Prefer YAML `title:` — skill's canonical source of truth now.
+	if fm, rest, ok := splitFrontMatter(s); ok {
+		if m := titleLineRe.FindStringSubmatch(fm); len(m) == 2 {
+			t := strings.TrimSpace(m[1])
+			// Strip surrounding quotes (single or double).
+			t = strings.Trim(t, "'\"")
+			if t != "" {
+				return t
+			}
+		}
+		s = rest
+	}
+	for _, raw := range strings.Split(s, "\n") {
 		line := strings.TrimSpace(raw)
 		if strings.HasPrefix(line, "# ") {
 			return strings.TrimSpace(line[2:])
@@ -329,14 +376,37 @@ func titleFor(s Session) string {
 	return strings.TrimSuffix(base, filepath.Ext(base))
 }
 
-// setFileTitle rewrites the first `# heading` line of path to `# <newTitle>`.
-// If no heading exists, prepends one.
+// setFileTitle writes the new title into the YAML front matter's `title:`
+// field (creating the field or the whole front matter block if missing).
+// Backward compat: if the file has no front matter but carries a legacy
+// H1, the H1 is updated in place instead.
 func setFileTitle(path, newTitle string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	lines := strings.Split(string(data), "\n")
+	text := string(data)
+	quoted := yamlQuote(newTitle)
+
+	// Front-matter path.
+	if fm, rest, ok := splitFrontMatter(text); ok {
+		newFm := ""
+		if titleLineRe.MatchString(fm) {
+			newFm = titleLineRe.ReplaceAllString(fm, "title: "+quoted)
+		} else {
+			// Prepend title: to the existing front matter.
+			newFm = "title: " + quoted + "\n" + fm
+		}
+		rebuilt := "---\n" + newFm
+		if !strings.HasSuffix(newFm, "\n") {
+			rebuilt += "\n"
+		}
+		rebuilt += "---\n" + rest
+		return os.WriteFile(path, []byte(rebuilt), 0644)
+	}
+
+	// Legacy (no front matter): edit the H1 in place or prepend one.
+	lines := strings.Split(text, "\n")
 	replaced := false
 	for i, raw := range lines {
 		line := strings.TrimSpace(raw)
@@ -356,6 +426,7 @@ func setFileTitle(path, newTitle string) error {
 }
 
 var appURL string
+var termManager = newTerminalManager()
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:7879", "listen address")
@@ -391,6 +462,14 @@ func main() {
 	srvErr := make(chan error, 1)
 	go func() { srvErr <- runServer(ln, rootAbs) }()
 
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		termManager.KillAll()
+		os.Exit(0)
+	}()
+
 	if !*noOpen {
 		go func() {
 			time.Sleep(250 * time.Millisecond)
@@ -400,6 +479,7 @@ func main() {
 
 	if *noTray {
 		if err := <-srvErr; err != nil {
+			termManager.KillAll()
 			log.Fatal(err)
 		}
 		return
@@ -423,12 +503,14 @@ func main() {
 				case <-copyItem.ClickedCh:
 					_ = clipboard.WriteAll(appURL)
 				case <-quitItem.ClickedCh:
+					termManager.KillAll()
 					systray.Quit()
 					return
 				case err := <-srvErr:
 					if err != nil {
 						log.Println("server:", err)
 					}
+					termManager.KillAll()
 					systray.Quit()
 					return
 				}
@@ -454,6 +536,7 @@ func runServer(ln net.Listener, rootAbs string) error {
 	}
 
 	h := newHub()
+	prev := newPrevCache()
 
 	w, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -462,9 +545,10 @@ func runServer(ln net.Listener, rootAbs string) error {
 	if err := w.Add(sessDir); err != nil {
 		return err
 	}
-	go watchLoop(w, store, h)
+	go watchLoop(w, store, h, prev)
 
 	mux := http.NewServeMux()
+	registerTerminalRoutes(mux, store, termManager)
 	sub, _ := fs.Sub(staticFS, "static")
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(sub))))
 	mux.HandleFunc("/favicon.svg", func(w http.ResponseWriter, r *http.Request) {
@@ -543,7 +627,8 @@ func runServer(ln net.Listener, rootAbs string) error {
 			writeJSON(w, out)
 		case http.MethodPost:
 			var body struct {
-				Title string `json:"title"`
+				Title  string `json:"title"`
+				Folder string `json:"folder"`
 			}
 			json.NewDecoder(r.Body).Decode(&body)
 			title := strings.TrimSpace(body.Title)
@@ -552,10 +637,20 @@ func runServer(ln net.Listener, rootAbs string) error {
 			}
 			id := fmt.Sprintf("%d-%s", time.Now().Unix(), slug(title))
 			path := filepath.Join(sessDir, id+".md")
-			initial := fmt.Sprintf("# %s\n\n_Created %s_\n\n", title, time.Now().Format(time.RFC3339))
+			// YAML front matter first, then the visible title. `created` is
+			// written into the front matter; writeSessionRef() below will
+			// preserve it when merging in `project_folder` for the folder case.
+			initial := fmt.Sprintf("---\ntitle: %s\ncreated: '%s'\n---\n", yamlQuote(title), time.Now().Format(time.RFC3339))
 			if err := os.WriteFile(path, []byte(initial), 0644); err != nil {
 				http.Error(w, err.Error(), 500)
 				return
+			}
+			folder := strings.TrimSpace(body.Folder)
+			if folder != "" {
+				if err := writeSessionRef(path, folder, ""); err != nil {
+					http.Error(w, err.Error(), 500)
+					return
+				}
 			}
 			sess := Session{ID: id, Title: title, Path: path, Created: time.Now()}
 			if err := store.add(sess); err != nil {
@@ -586,17 +681,19 @@ func runServer(ln net.Listener, rootAbs string) error {
 					return
 				}
 				os.Remove(sess.Path)
+				prev.forget(id)
 				w.WriteHeader(204)
 			case http.MethodPatch:
 				var body struct {
 					Title  *string `json:"title,omitempty"`
 					Pinned *bool   `json:"pinned,omitempty"`
+					Folder *string `json:"folder,omitempty"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 					http.Error(w, err.Error(), 400)
 					return
 				}
-				if body.Title == nil && body.Pinned == nil {
+				if body.Title == nil && body.Pinned == nil && body.Folder == nil {
 					http.Error(w, "nothing to update", 400)
 					return
 				}
@@ -626,6 +723,18 @@ func runServer(ln net.Listener, rootAbs string) error {
 						return
 					}
 				}
+				if body.Folder != nil {
+					sess, ok := store.byID(id)
+					if !ok {
+						http.Error(w, "not found", 404)
+						return
+					}
+					_, existingClaude, _ := parseSessionRef(sess.Path)
+					if err := writeSessionRef(sess.Path, strings.TrimSpace(*body.Folder), existingClaude); err != nil {
+						http.Error(w, err.Error(), 500)
+						return
+					}
+				}
 				w.WriteHeader(204)
 			default:
 				http.Error(w, "method", 405)
@@ -650,17 +759,91 @@ func runServer(ln net.Listener, rootAbs string) error {
 				http.Error(w, "not found", 404)
 				return
 			}
-			htmlOut, err := renderMD(sess.Path)
+			htmlOut, src, err := renderMDWithSource(sess.Path)
 			if err != nil {
 				http.Error(w, err.Error(), 500)
 				return
 			}
+			// Seed the prev cache with current content so a page refresh
+			// doesn't cause the next update to flag everything as "new".
+			prev.set(id, src)
+			folder, claudeSession, focus, _ := parseSessionMeta(sess.Path)
 			writeJSON(w, map[string]any{
-				"html":    htmlOut,
-				"path":    sess.Path,
-				"title":   sess.Title,
-				"updated": fileModTime(sess.Path),
+				"html":          htmlOut,
+				"path":          sess.Path,
+				"title":         sess.Title,
+				"updated":       fileModTime(sess.Path),
+				"folder":        folder,
+				"claudeSession": claudeSession,
+				"focus":         focus,
 			})
+		case "meta":
+			sess, ok := store.byID(id)
+			if !ok {
+				http.Error(w, "not found", 404)
+				return
+			}
+			folder, claudeSession, focus, _ := parseSessionMeta(sess.Path)
+			writeJSON(w, map[string]any{
+				"folder":        folder,
+				"claudeSession": claudeSession,
+				"focus":         focus,
+				"metadata":      parseAllFrontMatter(sess.Path),
+			})
+		case "open":
+			if r.Method != http.MethodPost {
+				http.Error(w, "method", 405)
+				return
+			}
+			sess, ok := store.byID(id)
+			if !ok {
+				http.Error(w, "not found", 404)
+				return
+			}
+			// Windows: `cmd /c start "" <path>` hands the file to the system
+			// default handler. Empty `""` is the window-title arg that `start`
+			// consumes, so the real path always lands as the file arg.
+			cmd := exec.Command("cmd", "/c", "start", "", sess.Path)
+			if err := cmd.Start(); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			w.WriteHeader(204)
+		case "open-cmd":
+			if r.Method != http.MethodPost {
+				http.Error(w, "method", 405)
+				return
+			}
+			sess, ok := store.byID(id)
+			if !ok {
+				http.Error(w, "not found", 404)
+				return
+			}
+			folder, claudeSession, _, _ := parseSessionMeta(sess.Path)
+			folder = strings.TrimSpace(folder)
+			if folder == "" {
+				http.Error(w, "session has no folder", 400)
+				return
+			}
+			// Launch cmd.exe directly with CREATE_NEW_CONSOLE so we don't
+			// need to shell through `cmd /c start cmd /k "..."` — that path
+			// forced embedded quotes, which cmd.exe mishandles because Go
+			// escapes `"` as `\"` (CRT style, not cmd style). Setting
+			// cmd.Dir avoids a `cd /d` prefix too.
+			args := []string{"/k", "claude"}
+			if claudeSession != "" {
+				args = append(args, "--resume", claudeSession)
+			} else {
+				args = append(args, "Use this for status: "+sess.Path)
+			}
+			cmd := exec.Command("cmd", args...)
+			cmd.Dir = folder
+			cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x00000010} // CREATE_NEW_CONSOLE
+			if err := cmd.Start(); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			w.WriteHeader(204)
 		case "stream":
 			sess, ok := store.byID(id)
 			if !ok {
@@ -677,7 +860,7 @@ func runServer(ln net.Listener, rootAbs string) error {
 			w.Header().Set("Connection", "keep-alive")
 			w.Header().Set("X-Accel-Buffering", "no")
 
-			if payload := buildUpdate(sess.Path); payload != "" {
+			if payload := buildUpdate(sess.Path, sess.ID, prev); payload != "" {
 				fmt.Fprintf(w, "event: update\ndata: %s\n\n", payload)
 				f.Flush()
 			}
@@ -708,7 +891,7 @@ func runServer(ln net.Listener, rootAbs string) error {
 	return http.Serve(ln, mux)
 }
 
-func watchLoop(w *fsnotify.Watcher, store *Store, h *hub) {
+func watchLoop(w *fsnotify.Watcher, store *Store, h *hub, prev *prevCache) {
 	debounce := map[string]*time.Timer{}
 	var dmu sync.Mutex
 	for {
@@ -730,7 +913,7 @@ func watchLoop(w *fsnotify.Watcher, store *Store, h *hub) {
 				if !ok {
 					return
 				}
-				if payload := buildUpdate(p); payload != "" {
+				if payload := buildUpdate(p, sess.ID, prev); payload != "" {
 					h.publish(sess.ID, payload)
 				}
 				h.publishGlobal(buildGlobalEvent(sess, p))

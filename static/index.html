@@ -7,6 +7,9 @@
 <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=3">
 <link rel="alternate icon" href="/favicon.ico?v=3">
 <link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/vendor/xterm.css">
+<script src="/static/vendor/xterm.js"></script>
+<script src="/static/vendor/xterm-addon-fit.js"></script>
 </head>
 <body>
 <div id="conn-banner" role="status" aria-live="polite" hidden>
@@ -38,19 +41,74 @@
 <main>
   <header id="view-head" hidden>
     <div class="title-row">
-      <h2 id="view-title" title="Double-click to rename"></h2>
+      <div class="title-block">
+        <h2 id="view-title" title="Double-click to rename"></h2>
+        <div id="view-focus" class="view-focus" hidden></div>
+      </div>
       <div class="actions">
         <span id="view-updated" class="updated-pill" title=""></span>
+        <button id="show-cmd-btn" hidden>▶ Show cmd</button>
+        <button id="open-cmd-btn" hidden title="Open cmd window in session folder (runs claude --resume when available)">Open cmd</button>
+        <button id="open-file-btn" title="Open .md file in system default editor">Open file</button>
+        <button id="meta-toggle-btn" aria-pressed="false" title="Show / hide YAML frontmatter">Metadata</button>
         <button id="arch-btn"></button>
         <button id="del-btn" class="danger" title="Delete">Delete</button>
       </div>
     </div>
     <code id="view-path" class="path" title="Click to copy"></code>
+    <div id="meta-panel" hidden></div>
   </header>
-  <article id="view" class="md">
-    <div class="empty">Create a session to get started.</div>
-  </article>
+  <div id="split">
+    <section id="cmd-col">
+      <div id="term-panel">
+        <header id="term-head">
+          <div class="term-actions">
+            <button id="term-start-btn" hidden>▶ Start cmd</button>
+            <button id="term-resume-btn" hidden>▶ Resume in Claude Code</button>
+            <button id="term-restart-btn" hidden>⊕ Restart</button>
+            <button id="term-close-btn" hidden>× Close</button>
+            <button id="term-kill-btn" class="danger" hidden>× Kill</button>
+          </div>
+        </header>
+        <form id="term-folder-form" hidden>
+          <label>No folder set —</label>
+          <input type="text" id="term-folder-input" placeholder="C:\path\to\project" autocomplete="off" spellcheck="false">
+          <button type="submit">Save</button>
+        </form>
+        <div id="term-host"></div>
+        <div id="term-empty" class="term-empty">Select a session to see its terminal.</div>
+      </div>
+    </section>
+    <div id="split-divider" role="separator" aria-orientation="vertical" title="Drag to resize"></div>
+    <section id="doc-col">
+      <article id="view" class="md">
+        <div class="empty">Create a session to get started.</div>
+      </article>
+    </section>
+  </div>
 </main>
+
+<dialog id="new-dialog">
+  <form id="new-form" method="dialog" class="new-body">
+    <h2>New session</h2>
+    <label for="new-title">Title</label>
+    <input type="text" id="new-title" required autocomplete="off">
+
+    <label for="new-folder">Working folder (optional)</label>
+    <div class="folder-row">
+      <input type="text" id="new-folder" placeholder="C:\path\to\project" autocomplete="off" spellcheck="false">
+      <button type="button" id="new-folder-browse" title="Browse for folder">Browse…</button>
+      <input type="file" id="new-folder-picker" webkitdirectory directory multiple hidden>
+    </div>
+    <p class="hint">Browse only reveals the folder <em>name</em> (browser security). For an absolute path, paste it above.</p>
+
+    <div class="new-actions">
+      <button type="button" id="new-cancel">Cancel</button>
+      <button type="button" id="new-skip">Skip folder</button>
+      <button type="submit" id="new-create">Create</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="help-dialog">
   <div class="help-body">
