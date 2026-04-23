@@ -278,7 +278,11 @@ body.dragging, body.dragging * { user-select: none; cursor: col-resize !importan
 #view-head {
   padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--panel);
 }
-.title-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+/* Two-row header: title + updated pill on top, action buttons on their own
+   row below. Keeps the updated pill anchored to the title — it's context
+   for *what* was updated — and lets the buttons wrap as a group. */
+.title-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: nowrap; }
+.actions-row { display: flex; justify-content: flex-end; margin-top: 10px; }
 .title-block { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .view-focus {
   font-size: 12px; color: var(--muted);
