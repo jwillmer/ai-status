@@ -4,27 +4,40 @@
 
 Whenever you change **any source that ships in the binary** — `main.go`, anything under `static/` (HTML/CSS/JS), `skill/`, or the embedded icon — you must rebuild `ai-status.exe` and restart the running service so the user sees the change immediately. Do not leave it to the user.
 
-Run this sequence after edits land:
+Run this sequence after edits land (verified-working on this machine):
 
 ```bash
-# 1. Stop the running instance (if any)
-taskkill //F //IM ai-status.exe 2>/dev/null
+# 1. Stop the running instance — look up the PID explicitly, because
+#    `taskkill //IM ai-status.exe` hits "Access is denied" against the GUI
+#    build whereas `//PID <id>` works reliably.
+PID=$(tasklist.exe //fi "imagename eq ai-status.exe" //fo csv 2>&1 \
+      | grep ai-status | awk -F'"' '{print $4}')
+[ -n "$PID" ] && taskkill.exe //PID "$PID" //F
 
-# 2. Rebuild
-'/c/Program Files/Go/bin/go.exe' build -o ai-status.exe .
+# 2. Rebuild — MUST pass `-ldflags="-H windowsgui"` so the exe runs as a
+#    Windows GUI app (no console window pops up when launched).
+export PATH="/c/Program Files/Go/bin:$PATH"
+go build -ldflags="-H windowsgui" -o ai-status.exe .
 
-# 3. Start detached WITHOUT opening a browser tab — the user already has one open
-nohup ./ai-status.exe --no-open > /tmp/ai-status.log 2>&1 &
-disown
+# 3. Launch detached WITHOUT opening a browser tab — the user already has one.
+#    `&` is enough on this Windows+Bash setup; no need for nohup/disown.
+./ai-status.exe --no-open &
+
+# 4. Verify: the process is listed and the server answers on port 7879.
+sleep 2 && tasklist.exe //fi "imagename eq ai-status.exe" //fo csv | grep ai-status
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7879/   # expect 200
 ```
+
+You can chain step 1–3 in a single Bash call (`&&` between the kill/build and a blank-line before the launch line) — the launch runs in the background so the Bash tool returns immediately.
 
 Key rules:
 
 - **Always pass `--no-open`.** The user already has a browser tab pointed at the dashboard; opening another is noise.
-- **Never run `./ai-status.exe` in the foreground of the Bash tool** — it blocks the shell. Use `nohup … &` + `disown`, or `run_in_background: true` on the Bash call.
-- **Verify after start:** `tasklist //FI "IMAGENAME eq ai-status.exe"` should show the process, and `curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7879/` should return `200`.
-- If `taskkill` reports "Access is denied", fall back to finding the PID with `tasklist` and killing by `//PID <id>`.
-- `cmd.exe //c start …` often hits `Access is denied` under this Bash tool — prefer `nohup` for detachment.
+- **Always pass `-ldflags="-H windowsgui"`.** Without it, running the exe opens a visible cmd window behind the tray icon.
+- **Never run `./ai-status.exe` in the foreground of the Bash tool** — it blocks the shell. Use `&` at the end, or `run_in_background: true` on the Bash call.
+- **Kill by PID, not by image name.** `taskkill //IM ai-status.exe` returns "Access is denied"; the PID form works.
+- **Don't use `cmd.exe //c start …` for detachment** — it also hits Access denied under the Bash tool. Plain `&` is sufficient.
+- **Don't rebuild without killing first.** Go can't replace a running exe on Windows — the build will fail with "The process cannot access the file".
 
 ## Auto-reload in the browser
 
