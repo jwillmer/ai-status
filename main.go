@@ -36,6 +36,26 @@ import (
 //go:embed static
 var staticFS embed.FS
 
+//go:embed skill/status-orchestrator/SKILL.md
+var skillFile []byte
+
+// skillPath is the absolute filesystem path where the embedded status-
+// orchestrator SKILL.md is written at startup. Fresh `claude` invocations
+// point at it so the agent loads the orchestrator role without requiring
+// the user to have the skill pre-installed.
+var skillPath string
+
+// freshClaudePrompt builds the single-arg prompt passed to `claude` when
+// starting a brand-new conversation for a session. It both loads the
+// embedded status-orchestrator skill and names the status file, so the
+// agent adopts the orchestrator role without requiring a skill install.
+func freshClaudePrompt(statusPath string) string {
+	if skillPath != "" {
+		return "Read and follow " + skillPath + ", then use this for status: " + statusPath
+	}
+	return "Use this for status: " + statusPath
+}
+
 type Session struct {
 	ID       string    `json:"id"`
 	Title    string    `json:"title"`
@@ -535,6 +555,14 @@ func runServer(ln net.Listener, rootAbs string) error {
 		return err
 	}
 
+	// Write the embedded SKILL.md to disk so `claude` can read it by path
+	// without requiring the user to have the skill pre-installed. Overwrite
+	// on every start so binary upgrades always refresh the on-disk copy.
+	skillPath = filepath.Join(dataDir, "status-orchestrator.SKILL.md")
+	if err := os.WriteFile(skillPath, skillFile, 0644); err != nil {
+		log.Printf("skill write: %v", err)
+	}
+
 	h := newHub()
 	prev := newPrevCache()
 
@@ -582,6 +610,14 @@ func runServer(ln net.Listener, rootAbs string) error {
 		w.Header().Set("Cache-Control", "no-cache")
 		data, _ := fs.ReadFile(sub, "index.html")
 		w.Write(data)
+	})
+
+	mux.HandleFunc("/api/config", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method", 405)
+			return
+		}
+		writeJSON(w, map[string]any{"skillPath": skillPath})
 	})
 
 	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {
@@ -637,10 +673,44 @@ func runServer(ln net.Listener, rootAbs string) error {
 			}
 			id := fmt.Sprintf("%d-%s", time.Now().Unix(), slug(title))
 			path := filepath.Join(sessDir, id+".md")
-			// YAML front matter first, then the visible title. `created` is
-			// written into the front matter; writeSessionRef() below will
-			// preserve it when merging in `project_folder` for the folder case.
-			initial := fmt.Sprintf("---\ntitle: %s\ncreated: '%s'\n---\n", yamlQuote(title), time.Now().Format(time.RFC3339))
+			// Skeleton per status-orchestrator SKILL §3: YAML front matter
+			// (title, created, focus) plus the canonical section scaffold so
+			// the dashboard renders with the expected shape on first open.
+			// writeSessionRef() below preserves these fields when merging in
+			// project_folder for the folder-provided case.
+			initial := fmt.Sprintf(`---
+title: %s
+created: '%s'
+focus: '(awaiting first request)'
+---
+
+## Active tasks
+
+| # | Task | Agent | Started | Status |
+|---|------|-------|---------|--------|
+
+## Done (awaiting confirmation)
+
+| # | Task | Finished | Result | Tested |
+|---|------|----------|--------|--------|
+
+## Completed
+
+| # | Task | Confirmed | Result |
+|---|------|-----------|--------|
+
+## Blocked / needs input
+
+_(empty unless a task is stuck)_
+
+## Agent log
+
+_(append-only, newest first)_
+
+## Notes
+
+_(free-form scratchpad — decisions, links, constraints)_
+`, yamlQuote(title), time.Now().Format(time.RFC3339))
 			if err := os.WriteFile(path, []byte(initial), 0644); err != nil {
 				http.Error(w, err.Error(), 500)
 				return
@@ -835,7 +905,7 @@ func runServer(ln net.Listener, rootAbs string) error {
 			if claudeSession != "" {
 				args = append(args, "--resume", claudeSession)
 			} else {
-				args = append(args, "Use this for status: "+sess.Path)
+				args = append(args, freshClaudePrompt(sess.Path))
 			}
 			cmd := exec.Command("cmd", args...)
 			if err := cmd.Start(); err != nil {

@@ -46,6 +46,13 @@ const newFolderPicker = $("#new-folder-picker");
 const newCancelBtn = $("#new-cancel");
 const newSkipBtn = $("#new-skip");
 
+const folderDialog = $("#folder-dialog");
+const folderForm = $("#folder-form");
+const folderInput = $("#folder-input");
+const folderBrowse = $("#folder-browse");
+const folderPicker = $("#folder-picker");
+const folderCancelBtn = $("#folder-cancel");
+
 let sessions = [];
 let currentId = null;
 let currentUpdated = null; // Date of current session last update
@@ -741,6 +748,12 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+let appConfig = { skillPath: "" };
+async function loadConfig() {
+  try { appConfig = await api(`/api/config`); } catch {}
+}
+
+loadConfig();
 loadSessions();
 // Initial collapse state — before any session is opened, collapse cmd column.
 document.body.classList.add("cmd-collapsed");
@@ -1070,10 +1083,17 @@ function startCmdForCurrent() {
   const s = sessions.find(x => x.id === currentTermId);
   if (!s) return;
   const mdPath = s.path || "";
-  const cmd = mdPath
-    ? `claude "Use this for status: ${mdPath}"`
-    : `claude`;
+  const cmd = mdPath ? `claude "${freshClaudePrompt(mdPath)}"` : `claude`;
   startTerminal(currentTermId, cmd);
+}
+
+function freshClaudePrompt(statusPath) {
+  // Mirrors backend freshClaudePrompt: name the embedded skill file so the
+  // agent adopts the orchestrator role even if the skill isn't installed.
+  if (appConfig && appConfig.skillPath) {
+    return `Read and follow ${appConfig.skillPath}, then use this for status: ${statusPath}`;
+  }
+  return `Use this for status: ${statusPath}`;
 }
 
 function resumeClaudeForCurrent() {
@@ -1102,6 +1122,66 @@ if (termCloseBtn) termCloseBtn.onclick = async () => {
   }
   closeExitedTerminal(id);
 };
+
+if (folderBrowse && folderPicker) {
+  folderBrowse.onclick = () => folderPicker.click();
+  folderPicker.addEventListener("change", () => {
+    const files = folderPicker.files;
+    if (!files || !files.length) return;
+    const rel = files[0].webkitRelativePath || "";
+    const name = rel.split("/")[0] || "";
+    if (name && !folderInput.value) {
+      folderInput.value = name;
+      folderInput.focus();
+      folderInput.setSelectionRange(0, folderInput.value.length);
+    }
+    folderPicker.value = "";
+  });
+}
+if (folderCancelBtn) {
+  folderCancelBtn.onclick = () => {
+    pendingFolderAction = null;
+    if (folderDialog) folderDialog.close();
+  };
+}
+if (folderDialog) {
+  folderDialog.addEventListener("click", (e) => {
+    if (e.target === folderDialog) {
+      pendingFolderAction = null;
+      folderDialog.close();
+    }
+  });
+  folderDialog.addEventListener("cancel", () => {
+    // Esc key — behave like Cancel button
+    pendingFolderAction = null;
+  });
+}
+if (folderForm) {
+  folderForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!currentId) { folderDialog && folderDialog.close(); return; }
+    const folder = (folderInput.value || "").trim();
+    if (!folder) { folderInput.focus(); return; }
+    try {
+      await api(`/api/sessions/${currentId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ folder }),
+      });
+      const s = sessions.find(x => x.id === currentId);
+      if (s) s.folder = folder;
+      await refreshMeta(currentId);
+      updateTermHead(currentId);
+      updateCmdCollapse();
+      const action = pendingFolderAction;
+      pendingFolderAction = null;
+      if (folderDialog) folderDialog.close();
+      if (action === "show-cmd") runShowCmd();
+      else if (action === "open-cmd") runOpenCmd();
+    } catch (err) {
+      alert("Save folder failed: " + err.message);
+    }
+  });
+}
 
 if (termFolderForm) {
   termFolderForm.addEventListener("submit", async (e) => {
@@ -1161,16 +1241,11 @@ function currentFolder() {
 }
 
 function promptForFolder(action) {
-  if (!currentId) return;
-  const e = termEntry(currentId) || createTerminalEntry(currentId);
-  if (!e) return;
-  e.visible = true;
-  e.div.classList.remove("hidden");
-  if (termEmpty) termEmpty.hidden = true;
+  if (!currentId || !folderDialog) return;
   pendingFolderAction = action;
-  updateTermHead(currentId);
-  updateCmdCollapse();
-  try { termFolderInput.focus(); } catch {}
+  if (folderInput) folderInput.value = "";
+  try { folderDialog.showModal(); } catch { folderDialog.show(); }
+  try { folderInput && folderInput.focus(); } catch {}
 }
 
 function runShowCmd() {

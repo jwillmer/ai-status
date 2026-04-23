@@ -108,6 +108,25 @@
   </form>
 </dialog>
 
+<dialog id="folder-dialog">
+  <form id="folder-form" method="dialog" class="new-body">
+    <h2>Set working folder</h2>
+    <p class="hint">This session has no folder yet. Paste an absolute path (or use Browse for the name only).</p>
+
+    <label for="folder-input">Working folder</label>
+    <div class="folder-row">
+      <input type="text" id="folder-input" placeholder="C:\path\to\project" autocomplete="off" spellcheck="false" required>
+      <button type="button" id="folder-browse" title="Browse for folder">Browse…</button>
+      <input type="file" id="folder-picker" webkitdirectory directory multiple hidden>
+    </div>
+
+    <div class="new-actions">
+      <button type="button" id="folder-cancel">Cancel</button>
+      <button type="submit" id="folder-save">Save</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="help-dialog">
   <div class="help-body">
     <div class="help-head">
