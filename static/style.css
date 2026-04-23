@@ -278,11 +278,19 @@ body.dragging, body.dragging * { user-select: none; cursor: col-resize !importan
 #view-head {
   padding: 16px 24px; border-bottom: 1px solid var(--border); background: var(--panel);
 }
-/* Two-row header: title + updated pill on top, action buttons on their own
-   row below. Keeps the updated pill anchored to the title — it's context
-   for *what* was updated — and lets the buttons wrap as a group. */
-.title-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: nowrap; }
-.actions-row { display: flex; justify-content: flex-end; margin-top: 10px; }
+/* Session header layout.
+   Always: buttons live on their own row, left-aligned — they're frequent
+   targets, keep them in a predictable place.
+   Row 1: title-block + updated-pill (pill at its natural size).
+   Row 2: actions, left-aligned.
+   ≤900px: title-block takes row 1 alone, pill drops to row 2 at natural
+   size (not full width), actions to row 3. */
+.title-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.title-row .actions { flex-basis: 100%; justify-content: flex-start; }
+
+@media (max-width: 900px) {
+  .title-row .title-block { flex-basis: 100%; }
+}
 .title-block { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
 .view-focus {
   font-size: 12px; color: var(--muted);
