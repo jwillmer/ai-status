@@ -104,8 +104,10 @@ main { grid-area: main; }
   border: 0; width: 28px; height: 28px; border-radius: 6px;
   font-weight: 700; cursor: pointer; font-size: 16px;
 }
-#new-btn { background: var(--accent); color: #0f1115; font-size: 18px; }
-#new-btn:hover { background: var(--accent-hover); }
+/* Keep the + button the same bright blue in both themes — it's the
+   primary call-to-action and should not dim in light mode. */
+#new-btn { background: #3b82f6; color: #ffffff; font-size: 18px; }
+#new-btn:hover { background: #60a5fa; }
 #help-btn { background: var(--panel-2); color: var(--muted); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; }
 #help-btn:hover { color: var(--accent); border-color: var(--accent); }
 #notify-btn {
