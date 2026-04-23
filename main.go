@@ -475,6 +475,7 @@ func runServer(ln net.Listener, rootAbs string) error {
 	})
 	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/x-icon")
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 		w.Write(iconBytes())
 	})
 	mux.HandleFunc("/download/status-orchestrator.skill", func(w http.ResponseWriter, r *http.Request) {

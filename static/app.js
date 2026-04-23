@@ -10,13 +10,13 @@ const viewUpdated = $("#view-updated");
 const viewEl = $("#view");
 const archBtn = $("#arch-btn");
 const delBtn = $("#del-btn");
-const renameBtn = $("#rename-btn");
 const newBtn = $("#new-btn");
 const helpBtn = $("#help-btn");
 const helpDialog = $("#help-dialog");
 const helpClose = $("#help-close");
 const notifyBtn = $("#notify-btn");
 const archHead = document.querySelector(".arch-head");
+const connBanner = $("#conn-banner");
 
 let sessions = [];
 let currentId = null;
@@ -406,7 +406,6 @@ viewPath.addEventListener("click", copyPath);
 newBtn.onclick = createSession;
 archBtn.onclick = toggleArchive;
 delBtn.onclick = deleteSession;
-renameBtn.onclick = startRename;
 archHead.onclick = () => { archOpen = !archOpen; renderList(); };
 
 searchInput.addEventListener("input", () => {
@@ -565,8 +564,40 @@ function startGlobalStream() {
     }
     maybeNotifyAny(p);
   });
-  globalEs.onerror = () => { /* browser auto-reconnects */ };
+  globalEs.onopen = () => markConnAlive();
+  globalEs.onerror = () => markConnError();
 }
+
+/* ---------------------------------------------------------------------------
+ * Connection banner
+ * Sticky notice shown when the app server is unreachable so the user knows
+ * live updates are paused. Driven by the always-on /api/events stream.
+ * ------------------------------------------------------------------------- */
+let connErrorTimer = null;
+function markConnAlive() {
+  if (connErrorTimer) { clearTimeout(connErrorTimer); connErrorTimer = null; }
+  if (connBanner && !connBanner.hidden) {
+    // Server was unreachable long enough to show the banner and is now back.
+    // Most likely it was restarted — reload so the UI picks up any new static
+    // assets (HTML/CSS/JS). Plain cached-asset case is cheap because the
+    // server sets no-cache on /favicon.* and /api/*; /static/* is served by
+    // http.FileServer which honours If-Modified-Since.
+    location.reload();
+    return;
+  }
+}
+function markConnError() {
+  if (!connBanner) return;
+  if (connErrorTimer || !connBanner.hidden) return;
+  // Grace period: browsers fire onerror during normal reconnect blips.
+  connErrorTimer = setTimeout(() => {
+    connErrorTimer = null;
+    if (!globalEs || globalEs.readyState !== EventSource.OPEN) {
+      connBanner.hidden = false;
+    }
+  }, 2500);
+}
+
 
 if (notifyBtn) notifyBtn.onclick = onNotifyClick;
 initNotifyState();

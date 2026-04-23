@@ -14,14 +14,41 @@
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
+
+#conn-banner {
+  grid-area: banner;
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 8px 14px; font-size: 13px; font-weight: 500;
+  background: #3a1a1a; color: #ffb4b4;
+  border-bottom: 1px solid var(--danger);
+}
+#conn-banner[hidden] { display: none; }
+#conn-banner .conn-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: var(--danger);
+  box-shadow: 0 0 0 0 rgba(255,107,107,.6);
+  animation: conn-pulse 1.4s ease-out infinite;
+}
+@keyframes conn-pulse {
+  0%   { box-shadow: 0 0 0 0 rgba(255,107,107,.55); }
+  70%  { box-shadow: 0 0 0 8px rgba(255,107,107,0); }
+  100% { box-shadow: 0 0 0 0 rgba(255,107,107,0); }
+}
+
 body {
   font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Inter, system-ui, sans-serif;
   background: var(--bg);
   color: var(--fg);
   display: grid;
   grid-template-columns: 280px 1fr;
+  grid-template-rows: auto 1fr;
+  grid-template-areas:
+    "banner banner"
+    "sidebar main";
   overflow: hidden;
 }
+#sidebar { grid-area: sidebar; }
+main { grid-area: main; }
 #sidebar {
   background: var(--panel);
   border-right: 1px solid var(--border);

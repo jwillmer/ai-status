@@ -4,15 +4,19 @@
 <meta charset="utf-8">
 <title>AI Status</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2">
-<link rel="alternate icon" href="/favicon.ico">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg?v=3">
+<link rel="alternate icon" href="/favicon.ico?v=3">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<div id="conn-banner" role="status" aria-live="polite" hidden>
+  <span class="conn-dot" aria-hidden="true"></span>
+  <span class="conn-text">Server unreachable — no live updates. Retrying…</span>
+</div>
 <aside id="sidebar">
   <div class="side-head">
     <div class="brand">
-      <img src="/favicon.svg?v=2" alt="" class="logo">
+      <img src="/favicon.svg?v=3" alt="" class="logo">
       <h1>AI Status</h1>
     </div>
     <div class="side-actions">
@@ -37,7 +41,6 @@
       <h2 id="view-title" title="Double-click to rename"></h2>
       <div class="actions">
         <span id="view-updated" class="updated-pill" title=""></span>
-        <button id="rename-btn" title="Rename">Rename</button>
         <button id="arch-btn"></button>
         <button id="del-btn" class="danger" title="Delete">Delete</button>
       </div>
@@ -52,7 +55,7 @@
 <dialog id="help-dialog">
   <div class="help-body">
     <div class="help-head">
-      <img src="/favicon.svg?v=2" alt="" class="logo big">
+      <img src="/favicon.svg?v=3" alt="" class="logo big">
       <h2>AI Status</h2>
       <button id="help-close" aria-label="Close">×</button>
     </div>
