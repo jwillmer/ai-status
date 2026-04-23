@@ -474,3 +474,57 @@ body.dragging, body.dragging * { user-select: none; cursor: col-resize !importan
 }
 #new-create:hover,
 #folder-save:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #0f1115; }
+
+@media (max-width: 768px) {
+  body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto 250px 1fr;
+    grid-template-areas:
+      "banner"
+      "sidebar"
+      "main";
+  }
+  #sidebar {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  #split {
+    display: flex;
+    flex-direction: column;
+  }
+  #cmd-col {
+    flex: none;
+    height: 250px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  #split-divider {
+    display: none;
+  }
+  #view {
+    padding: 16px 20px;
+  }
+  .title-row {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .actions {
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    flex-wrap: nowrap;
+    scrollbar-width: none;
+  }
+  .actions::-webkit-scrollbar {
+    display: none;
+  }
+  .actions > * {
+    flex-shrink: 0;
+  }
+  .path {
+    scrollbar-width: none;
+  }
+  .path::-webkit-scrollbar {
+    display: none;
+  }
+}
