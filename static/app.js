@@ -22,6 +22,8 @@ const helpDialog = $("#help-dialog");
 const helpClose = $("#help-close");
 const notifyBtn = $("#notify-btn");
 const themeBtn = $("#theme-btn");
+const menuToggle = $("#menu-toggle");
+const menuOverlay = $("#menu-overlay");
 const archHead = document.querySelector(".arch-head");
 const connBanner = $("#conn-banner");
 
@@ -400,6 +402,9 @@ function openSession(id) {
   currentId = id;
   const s = sessions.find(x => x.id === id);
   if (!s) return;
+  // Auto-close the mobile drawer when the user picks a session — the sidebar
+  // was dim/overlaid and they wouldn't want to tap again to dismiss it.
+  if (isMobileView && isMobileView()) closeMenu();
   closeStream();
   clearUnseen();
   viewHead.hidden = false;
@@ -806,6 +811,30 @@ if (themeBtn) {
     setTheme(next);
   };
 }
+
+/* ---------------------------------------------------------------------------
+ * Mobile off-canvas drawer. The CSS shows the hamburger + overlay below 768px;
+ * this just wires the toggle, overlay click, Escape, and auto-close-on-select.
+ * ------------------------------------------------------------------------- */
+function isMobileView() { return window.matchMedia("(max-width: 768px)").matches; }
+function openMenu() {
+  document.body.classList.add("menu-open");
+  if (menuToggle) menuToggle.setAttribute("aria-expanded", "true");
+}
+function closeMenu() {
+  if (!document.body.classList.contains("menu-open")) return;
+  document.body.classList.remove("menu-open");
+  if (menuToggle) menuToggle.setAttribute("aria-expanded", "false");
+}
+function toggleMenu() {
+  if (document.body.classList.contains("menu-open")) closeMenu();
+  else openMenu();
+}
+if (menuToggle) menuToggle.onclick = toggleMenu;
+if (menuOverlay) menuOverlay.onclick = closeMenu;
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && document.body.classList.contains("menu-open")) closeMenu();
+});
 
 loadConfig();
 loadSessions();
