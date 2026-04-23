@@ -8,6 +8,16 @@
 <link rel="alternate icon" href="/favicon.ico?v=3">
 <link rel="stylesheet" href="/static/style.css">
 <link rel="stylesheet" href="/static/vendor/xterm.css">
+<script>
+  // Apply the saved theme before the stylesheet paints so there's no flash.
+  // "system" (or missing cookie) leaves the attribute off and lets
+  // prefers-color-scheme decide.
+  (function () {
+    var m = document.cookie.match(/(?:^|;\s*)theme=([^;]+)/);
+    var t = m ? decodeURIComponent(m[1]) : "system";
+    if (t === "light" || t === "dark") document.documentElement.setAttribute("data-theme", t);
+  })();
+</script>
 <script src="/static/vendor/xterm.js"></script>
 <script src="/static/vendor/xterm-addon-fit.js"></script>
 </head>
@@ -23,6 +33,7 @@
       <h1>AI Status</h1>
     </div>
     <div class="side-actions">
+      <button id="theme-btn" title="Theme (system / light / dark)" aria-label="Cycle theme">🖥️</button>
       <button id="notify-btn" title="Enable desktop notifications" aria-label="Toggle desktop notifications" aria-pressed="false">🔕</button>
       <button id="help-btn" title="What is this?" aria-label="Help">?</button>
       <button id="new-btn" title="New session">＋</button>

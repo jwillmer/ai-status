@@ -21,6 +21,7 @@ const helpBtn = $("#help-btn");
 const helpDialog = $("#help-dialog");
 const helpClose = $("#help-close");
 const notifyBtn = $("#notify-btn");
+const themeBtn = $("#theme-btn");
 const archHead = document.querySelector(".arch-head");
 const connBanner = $("#conn-banner");
 
@@ -760,6 +761,41 @@ document.addEventListener("keydown", (e) => {
 let appConfig = { skillPath: "" };
 async function loadConfig() {
   try { appConfig = await api(`/api/config`); } catch {}
+}
+
+/* ---------------------------------------------------------------------------
+ * Theme switcher — cycles system → light → dark → system. Persisted as the
+ * `theme` cookie (1 year). The initial paint is already applied by the inline
+ * script in index.html <head>; this only wires the toggle button.
+ * ------------------------------------------------------------------------- */
+const THEME_ORDER = ["system", "light", "dark"];
+const THEME_ICONS = { system: "🖥️", light: "☀️", dark: "🌙" };
+const THEME_LABELS = { system: "System theme", light: "Light theme", dark: "Dark theme" };
+
+function getTheme() {
+  const m = document.cookie.match(/(?:^|;\s*)theme=([^;]+)/);
+  const t = m ? decodeURIComponent(m[1]) : "system";
+  return THEME_ORDER.includes(t) ? t : "system";
+}
+function applyTheme(theme) {
+  if (theme === "system") document.documentElement.removeAttribute("data-theme");
+  else document.documentElement.setAttribute("data-theme", theme);
+  if (themeBtn) {
+    themeBtn.textContent = THEME_ICONS[theme];
+    themeBtn.title = THEME_LABELS[theme] + " — click to cycle";
+  }
+}
+function setTheme(theme) {
+  // 1-year cookie so the choice survives browser restarts.
+  document.cookie = `theme=${encodeURIComponent(theme)}; path=/; max-age=31536000; samesite=lax`;
+  applyTheme(theme);
+}
+applyTheme(getTheme());
+if (themeBtn) {
+  themeBtn.onclick = () => {
+    const next = THEME_ORDER[(THEME_ORDER.indexOf(getTheme()) + 1) % THEME_ORDER.length];
+    setTheme(next);
+  };
 }
 
 loadConfig();

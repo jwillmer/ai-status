@@ -1,3 +1,8 @@
+/* ---------------------------------------------------------------------------
+ * Theme palette. Dark is the default. The user can force light or dark via
+ * `[data-theme="light"]` / `[data-theme="dark"]` on <html>; with no attribute
+ * the @media query below follows the OS preference (the "System" setting).
+ * ------------------------------------------------------------------------- */
 :root {
   --bg: #0f1115;
   --panel: #161922;
@@ -11,6 +16,34 @@
   --ok: #5ecf8a;
   --code-bg: #0b0d13;
   --radius: 8px;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --bg: #f7f8fa;
+    --panel: #ffffff;
+    --panel-2: #eef1f6;
+    --border: #d6dae2;
+    --fg: #1a1d24;
+    --muted: #60677a;
+    --accent: #3f6fe0;
+    --accent-hover: #2a58c6;
+    --danger: #d64040;
+    --ok: #2d9b60;
+    --code-bg: #f0f2f6;
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f7f8fa;
+  --panel: #ffffff;
+  --panel-2: #eef1f6;
+  --border: #d6dae2;
+  --fg: #1a1d24;
+  --muted: #60677a;
+  --accent: #3f6fe0;
+  --accent-hover: #2a58c6;
+  --danger: #d64040;
+  --ok: #2d9b60;
+  --code-bg: #f0f2f6;
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
