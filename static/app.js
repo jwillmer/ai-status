@@ -1119,6 +1119,10 @@ if (termFolderForm) {
       await refreshMeta(currentTermId);
       updateTermHead(currentTermId);
       updateCmdCollapse();
+      const action = pendingFolderAction;
+      pendingFolderAction = null;
+      if (action === "show-cmd") runShowCmd();
+      else if (action === "open-cmd") runOpenCmd();
     } catch (err) {
       alert("Save folder failed: " + err.message);
     }
@@ -1140,37 +1144,68 @@ function updateCmdCollapse() {
   // (so Start/Resume can proceed) OR a background PTY is already running
   // for this session (so the button reattaches).
   if (showCmdBtn) {
-    const s = currentId ? sessions.find(x => x.id === currentId) : null;
-    const meta = currentId ? metaCache.get(currentId) : null;
-    const folder = (entry && entry.folder) || (meta && meta.folder) || (s && s.folder) || "";
-    const hasBgPty = !!(entry && entry.running);
-    showCmdBtn.hidden = !shouldCollapse || (!folder && !hasBgPty);
+    showCmdBtn.hidden = !shouldCollapse || !currentId;
   }
 
   if (was !== shouldCollapse) scheduleTermFit();
 }
 
+let pendingFolderAction = null;
+
+function currentFolder() {
+  if (!currentId) return "";
+  const entry = termEntry(currentId);
+  const meta = metaCache.get(currentId);
+  const s = sessions.find(x => x.id === currentId);
+  return (entry && entry.folder) || (meta && meta.folder) || (s && s.folder) || "";
+}
+
+function promptForFolder(action) {
+  if (!currentId) return;
+  const e = termEntry(currentId) || createTerminalEntry(currentId);
+  if (!e) return;
+  e.visible = true;
+  e.div.classList.remove("hidden");
+  if (termEmpty) termEmpty.hidden = true;
+  pendingFolderAction = action;
+  updateTermHead(currentId);
+  updateCmdCollapse();
+  try { termFolderInput.focus(); } catch {}
+}
+
+function runShowCmd() {
+  if (!currentId) return;
+  const e = termEntry(currentId) || createTerminalEntry(currentId);
+  if (!e) return;
+  e.visible = true;
+  e.div.classList.remove("hidden");
+  if (termEmpty) termEmpty.hidden = true;
+  if (e.running && !e.ws) {
+    openTerminalSocket(currentId);
+    updateTermHead(currentId);
+    updateCmdCollapse();
+    return;
+  }
+  const meta = metaCache.get(currentId);
+  const uuid = (e.claudeSession) || (meta && meta.claudeSession) || "";
+  if (uuid) resumeClaudeForCurrent();
+  else startCmdForCurrent();
+}
+
+async function runOpenCmd() {
+  if (!currentId) return;
+  try {
+    await api(`/api/sessions/${currentId}/open-cmd`, { method: "POST" });
+  } catch (e) {
+    alert("Open cmd failed: " + e.message);
+  }
+}
+
 if (showCmdBtn) {
   showCmdBtn.onclick = () => {
     if (!currentId) return;
-    const e = termEntry(currentId) || createTerminalEntry(currentId);
-    if (!e) return;
-    e.visible = true;
-    e.div.classList.remove("hidden");
-    if (termEmpty) termEmpty.hidden = true;
-    if (e.running && !e.ws) {
-      // PTY already alive in backend — just reattach without spawning a new one.
-      openTerminalSocket(currentId);
-      updateTermHead(currentId);
-      updateCmdCollapse();
-      return;
-    }
-    // No running PTY: prefer Resume when the session has a claude_session
-    // UUID, fall back to a fresh `claude "Use this for status: ..."` start.
-    const meta = metaCache.get(currentId);
-    const uuid = (e.claudeSession) || (meta && meta.claudeSession) || "";
-    if (uuid) resumeClaudeForCurrent();
-    else startCmdForCurrent();
+    if (!currentFolder()) { promptForFolder("show-cmd"); return; }
+    runShowCmd();
   };
 }
 
@@ -1186,13 +1221,10 @@ if (openFileBtn) {
 }
 
 if (openCmdBtn) {
-  openCmdBtn.onclick = async () => {
+  openCmdBtn.onclick = () => {
     if (!currentId) return;
-    try {
-      await api(`/api/sessions/${currentId}/open-cmd`, { method: "POST" });
-    } catch (e) {
-      alert("Open cmd failed: " + e.message);
-    }
+    if (!currentFolder()) { promptForFolder("open-cmd"); return; }
+    runOpenCmd();
   };
 }
 
@@ -1205,11 +1237,7 @@ function updateFocus(text) {
 
 function updateOpenCmdVisibility() {
   if (!openCmdBtn) return;
-  if (!currentId) { openCmdBtn.hidden = true; return; }
-  const s = sessions.find(x => x.id === currentId);
-  const meta = metaCache.get(currentId);
-  const folder = (meta && meta.folder) || (s && s.folder) || "";
-  openCmdBtn.hidden = !folder;
+  openCmdBtn.hidden = !currentId;
 }
 
 const META_SHOWN_KEY = "meta_panel_shown";
