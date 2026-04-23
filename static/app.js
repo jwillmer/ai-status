@@ -33,8 +33,6 @@ const termHost = $("#term-host");
 const termEmpty = $("#term-empty");
 const termStartBtn = $("#term-start-btn");
 const termResumeBtn = $("#term-resume-btn");
-const termKillBtn = $("#term-kill-btn");
-const termRestartBtn = $("#term-restart-btn");
 const termCloseBtn = $("#term-close-btn");
 const termFolderForm = $("#term-folder-form");
 const termFolderInput = $("#term-folder-input");
@@ -454,8 +452,6 @@ async function deleteSession() {
     termFolderForm.hidden = true;
     termStartBtn.hidden = true;
     termResumeBtn.hidden = true;
-    termKillBtn.hidden = true;
-    termRestartBtn.hidden = true;
     termCloseBtn.hidden = true;
   }
   renderList();
@@ -822,6 +818,36 @@ function createTerminalEntry(id) {
   if (fit) term.loadAddon(fit);
   term.open(div);
 
+  // Ctrl+C copies when there's a selection, otherwise forwards ^C to the
+  // PTY (the shell interrupt). Ctrl+V / Ctrl+Shift+V paste from clipboard.
+  // Ctrl+Shift+C always copies (convenient when shell has ^C bound).
+  // Return false from the handler to prevent xterm from also emitting
+  // the keystroke to the PTY.
+  term.attachCustomKeyEventHandler((ev) => {
+    if (ev.type !== "keydown") return true;
+    const ctrl = ev.ctrlKey && !ev.metaKey && !ev.altKey;
+    if (!ctrl) return true;
+    const key = ev.key.toLowerCase();
+    if (key === "c") {
+      if (ev.shiftKey || term.hasSelection()) {
+        const sel = term.getSelection();
+        if (sel) navigator.clipboard.writeText(sel).catch(() => {});
+        return false;
+      }
+      return true; // no selection: let ^C pass through as interrupt
+    }
+    if (key === "v") {
+      navigator.clipboard.readText().then((txt) => {
+        if (!txt) return;
+        if (entry && entry.ws && entry.ws.readyState === 1) {
+          entry.ws.send(new TextEncoder().encode(txt));
+        }
+      }).catch(() => {});
+      return false;
+    }
+    return true;
+  });
+
   const entry = {
     term, fit, div,
     ws: null,
@@ -933,14 +959,14 @@ function updateTermHead(id) {
   termFolderForm.hidden = !showFolderForm;
   if (showFolderForm) termFolderInput.value = "";
 
-  // Buttons
-  const canStart = !!s && !!folder && !running;
-  const canResume = !!s && !!folder && !!claudeSession && !running;
-  termStartBtn.hidden = !canStart || exited;
-  termResumeBtn.hidden = !canResume || exited;
-  termKillBtn.hidden = !running;
-  termRestartBtn.hidden = !exited || running;
-  termCloseBtn.hidden = !exited || running;
+  // Buttons: Start/Resume while no PTY exists; single Close while running
+  // or exited. Close either kills the PTY (if running) or just disposes the
+  // xterm instance (if exited) — reopen with the header's ▶ Show cmd.
+  const canStart = !!s && !!folder && !running && !exited;
+  const canResume = !!s && !!folder && !!claudeSession && !running && !exited;
+  termStartBtn.hidden = !canStart;
+  termResumeBtn.hidden = !canResume;
+  termCloseBtn.hidden = !(running || exited);
 }
 
 /* ----- Actions ----- */
@@ -1026,14 +1052,6 @@ function openTerminalSocket(id) {
   ws.addEventListener("error", () => { /* close handler will follow */ });
 }
 
-async function killTerminal(id) {
-  try {
-    await api(`/api/terminal/${id}`, { method: "DELETE" });
-  } catch (e) {
-    alert("Kill failed: " + e.message);
-  }
-}
-
 function closeExitedTerminal(id) {
   const entry = termEntry(id);
   if (!entry) return;
@@ -1069,28 +1087,21 @@ function resumeClaudeForCurrent() {
 
 if (termStartBtn) termStartBtn.onclick = startCmdForCurrent;
 if (termResumeBtn) termResumeBtn.onclick = resumeClaudeForCurrent;
-if (termKillBtn) termKillBtn.onclick = () => { if (currentTermId) killTerminal(currentTermId); };
-if (termRestartBtn) termRestartBtn.onclick = () => {
+if (termCloseBtn) termCloseBtn.onclick = async () => {
   if (!currentTermId) return;
-  const entry = termEntry(currentTermId);
-  if (!entry) return;
-  // Prefer `/resume` when the md already carries a claude_session UUID — that
-  // matches the user's intent ("pick up where we left off"). Fall back to the
-  // last boot command, then to a fresh `claude "Use this for status: …"`.
-  const meta = metaCache.get(currentTermId);
-  const uuid = (entry.claudeSession) || (meta && meta.claudeSession) || "";
-  const s = sessions.find(x => x.id === currentTermId);
-  const mdPath = (s && s.path) || "";
-  let cmd;
-  if (uuid) cmd = `claude --resume ${uuid}`;
-  else if (entry.bootCommand) cmd = entry.bootCommand;
-  else if (mdPath) cmd = `claude "Use this for status: ${mdPath}"`;
-  else cmd = "claude";
-  entry.exited = false;
-  try { entry.term.clear(); } catch {}
-  startTerminal(currentTermId, cmd);
+  const id = currentTermId;
+  const entry = termEntry(id);
+  // If the PTY is still running, kill it first (server-side); regardless,
+  // dispose the xterm instance so the column collapses. The user reopens
+  // via the ▶ Show cmd button in the unified header.
+  if (entry && entry.running) {
+    try { await api(`/api/terminal/${id}`, { method: "DELETE" }); } catch (e) {
+      alert("Close failed: " + e.message);
+      return;
+    }
+  }
+  closeExitedTerminal(id);
 };
-if (termCloseBtn) termCloseBtn.onclick = () => { if (currentTermId) closeExitedTerminal(currentTermId); };
 
 if (termFolderForm) {
   termFolderForm.addEventListener("submit", async (e) => {
@@ -1145,6 +1156,8 @@ if (showCmdBtn) {
     const e = termEntry(currentId) || createTerminalEntry(currentId);
     if (!e) return;
     e.visible = true;
+    e.div.classList.remove("hidden");
+    if (termEmpty) termEmpty.hidden = true;
     if (e.running && !e.ws) {
       // PTY already alive in backend — just reattach without spawning a new one.
       openTerminalSocket(currentId);
@@ -1152,8 +1165,12 @@ if (showCmdBtn) {
       updateCmdCollapse();
       return;
     }
-    // No running PTY: fall through to the normal Start cmd flow.
-    startCmdForCurrent();
+    // No running PTY: prefer Resume when the session has a claude_session
+    // UUID, fall back to a fresh `claude "Use this for status: ..."` start.
+    const meta = metaCache.get(currentId);
+    const uuid = (e.claudeSession) || (meta && meta.claudeSession) || "";
+    if (uuid) resumeClaudeForCurrent();
+    else startCmdForCurrent();
   };
 }
 

@@ -825,20 +825,19 @@ func runServer(ln net.Listener, rootAbs string) error {
 				http.Error(w, "session has no folder", 400)
 				return
 			}
-			// Launch cmd.exe directly with CREATE_NEW_CONSOLE so we don't
-			// need to shell through `cmd /c start cmd /k "..."` — that path
-			// forced embedded quotes, which cmd.exe mishandles because Go
-			// escapes `"` as `\"` (CRT style, not cmd style). Setting
-			// cmd.Dir avoids a `cd /d` prefix too.
-			args := []string{"/k", "claude"}
+			// Use `cmd /c start "" /D <folder> cmd /k claude ...` so the
+			// new cmd window is fully detached from the server (which is a
+			// GUI build with no console / no std handles). `start /D` sets
+			// the child's cwd without needing `cd /d`, and each claude arg
+			// is passed as its own Go exec arg — Go's EscapeArg handles
+			// spaces in the fallback prompt cleanly, no embedded quotes.
+			args := []string{"/c", "start", "", "/D", folder, "cmd.exe", "/k", "claude"}
 			if claudeSession != "" {
 				args = append(args, "--resume", claudeSession)
 			} else {
 				args = append(args, "Use this for status: "+sess.Path)
 			}
 			cmd := exec.Command("cmd", args...)
-			cmd.Dir = folder
-			cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x00000010} // CREATE_NEW_CONSOLE
 			if err := cmd.Start(); err != nil {
 				http.Error(w, err.Error(), 500)
 				return

@@ -66,17 +66,33 @@ func newLines(prev, curr string) map[string]struct{} {
 // leaf markers: list bullets, task checkboxes, heading hashes, blockquote
 // prefix, emphasis, inline code, and links.
 var (
-	mdBulletRe = regexp.MustCompile(`^\s*([-*+]|\d+\.)\s+`)
-	mdTaskRe   = regexp.MustCompile(`^\s*\[[ xX]\]\s+`)
-	mdHeadRe   = regexp.MustCompile(`^\s*#{1,6}\s+`)
-	mdQuoteRe  = regexp.MustCompile(`^\s*>\s?`)
-	mdLinkRe   = regexp.MustCompile(`\[([^\]]+)\]\([^)]+\)`)
-	mdEmphRe   = regexp.MustCompile("[*_`~]+")
-	wsCollapse = regexp.MustCompile(`\s+`)
+	mdBulletRe   = regexp.MustCompile(`^\s*([-*+]|\d+\.)\s+`)
+	mdTaskRe     = regexp.MustCompile(`^\s*\[[ xX]\]\s+`)
+	mdHeadRe     = regexp.MustCompile(`^\s*#{1,6}\s+`)
+	mdQuoteRe    = regexp.MustCompile(`^\s*>\s?`)
+	mdLinkRe     = regexp.MustCompile(`\[([^\]]+)\]\([^)]+\)`)
+	mdEmphRe     = regexp.MustCompile("[*_`~]+")
+	mdTableRowRe = regexp.MustCompile(`^\s*\|(.*)\|\s*$`)
+	mdTableSepRe = regexp.MustCompile(`^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$`)
+	wsCollapse   = regexp.MustCompile(`\s+`)
 )
 
 func stripMD(line string) string {
 	s := line
+	// Table rows: `| a | b | c |` → `a b c` so they match the rendered
+	// <tr>'s plain text. Separator rows like `|---|---|` reduce to empty
+	// via the same path and naturally fail the whole-block match later.
+	if mdTableSepRe.MatchString(s) {
+		return ""
+	}
+	if m := mdTableRowRe.FindStringSubmatch(s); len(m) == 2 {
+		parts := strings.Split(m[1], "|")
+		cells := make([]string, 0, len(parts))
+		for _, p := range parts {
+			cells = append(cells, strings.TrimSpace(p))
+		}
+		s = strings.Join(cells, " ")
+	}
 	s = mdHeadRe.ReplaceAllString(s, "")
 	s = mdQuoteRe.ReplaceAllString(s, "")
 	s = mdBulletRe.ReplaceAllString(s, "")
@@ -89,7 +105,7 @@ func stripMD(line string) string {
 
 // Precomputed regexes for HTML post-processing.
 var (
-	blockOpenRe = regexp.MustCompile(`<(p|li|h[1-6]|pre|blockquote)(\s[^>]*)?>`)
+	blockOpenRe = regexp.MustCompile(`<(p|li|h[1-6]|pre|blockquote|tr)(\s[^>]*)?>`)
 	htmlTagRe   = regexp.MustCompile(`<[^>]+>`)
 )
 
