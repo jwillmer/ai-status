@@ -1,5 +1,34 @@
 # ai-status — project instructions
 
+## Full workflow for a new feature or fix
+
+Every change follows the same five phases. Don't skip 3 or 5 — they're the difference between "done on disk" and "done for the user."
+
+1. **Understand + edit.** Read the files you need (never guess the current state). Make the code/markup change. Keep the diff focused — don't refactor surrounding code unless the task asks for it.
+2. **Update the status file** (`sessions/<current>.md`). If there's an active orchestration session, move the task through its phases: add it to *Active tasks* when starting, move to *Done (awaiting confirmation)* with a one-line result when the code is landed, append a timestamped entry to the *Agent log*. Update `focus:` in the YAML front matter so the dashboard header reflects what's being worked on right now. Use `Edit` for partial updates; never rewrite the whole file.
+3. **Rebuild + restart** (if the change ships in the binary — see below). Kill the running exe, rebuild with the GUI flag, launch detached with `--no-open`. The exact commands are in the next section.
+4. **Verify.** Confirm the new process is up (`tasklist` + `curl` → 200). For UI changes, confirm via the user's open tab (it auto-reloads); for backend changes, hit the relevant endpoint with `curl` when it's easy to do so.
+5. **Commit.** Stage only the files you edited (`git add <paths>` — not `-A`). Write a HEREDOC commit message per the commit conventions in the Claude Code system prompt. Don't commit generated or scratch files (`data/`, `sessions/`, `tools/<scratch>/`).
+
+### What triggers a rebuild?
+
+| Edited file                             | Needs rebuild? |
+|-----------------------------------------|----------------|
+| `main.go`, `terminal.go`, `diff.go`     | **Yes**        |
+| Anything under `static/` (HTML/CSS/JS)  | **Yes** (embedded via `//go:embed`) |
+| Anything under `skill/`                 | **Yes** (SKILL.md is embedded, served to Claude at first-message time) |
+| `go.mod` / `go.sum` / icon resource     | **Yes**        |
+| `CLAUDE.md`, `README.md`, other docs    | No             |
+| Files in `sessions/`, `data/`           | No (runtime data) |
+
+When in doubt: rebuild. It's cheap (~2s) and the user's tab auto-reloads.
+
+### Committing
+
+- Commit at natural stopping points — after each user-visible improvement, not every micro-edit. A single `feat:` or `fix:` commit per feature/bug is ideal.
+- **Only commit when the user asks, or when completing a distinct task they requested.** Don't commit speculative edits.
+- The user has already seen the diff via the live dashboard; keep the message focused on *why* the change was made, not *what* (the diff already says what).
+
 ## Rebuild / restart workflow (required after code changes)
 
 Whenever you change **any source that ships in the binary** — `main.go`, anything under `static/` (HTML/CSS/JS), `skill/`, or the embedded icon — you must rebuild `ai-status.exe` and restart the running service so the user sees the change immediately. Do not leave it to the user.
