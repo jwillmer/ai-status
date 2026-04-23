@@ -551,6 +551,13 @@ function startGlobalStream() {
     const s = sessions.find(x => x.id === p.sessionId);
     if (s) {
       if (p.updated) s.updated = p.updated;
+      if (p.title && p.title !== s.title) {
+        s.title = p.title;
+        if (p.sessionId === currentId) {
+          viewTitle.textContent = p.title;
+          setDocTitle(p.title);
+        }
+      }
       renderList();
     }
     if (p.sessionId === currentId && !isForeground()) {

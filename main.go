@@ -280,7 +280,7 @@ func buildGlobalEvent(sess Session, path string) string {
 	htmlOut, _ := renderMD(path)
 	b, _ := json.Marshal(map[string]any{
 		"sessionId": sess.ID,
-		"title":     sess.Title,
+		"title":     titleFor(sess),
 		"updated":   fileModTime(path),
 		"snippet":   plainSnippet(htmlOut, 140),
 	})
@@ -290,13 +290,69 @@ func buildGlobalEvent(sess Session, path string) string {
 func sessionWithUpdated(s Session) map[string]any {
 	return map[string]any{
 		"id":       s.ID,
-		"title":    s.Title,
+		"title":    titleFor(s),
 		"path":     s.Path,
 		"created":  s.Created,
 		"archived": s.Archived,
 		"pinned":   s.Pinned,
 		"updated":  fileModTime(s.Path),
 	}
+}
+
+// fileTitle returns the first `# heading` line in the given markdown file,
+// or "" if none is found within the first few kilobytes.
+func fileTitle(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	if len(data) > 8192 {
+		data = data[:8192]
+	}
+	for _, raw := range strings.Split(string(data), "\n") {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "# ") {
+			return strings.TrimSpace(line[2:])
+		}
+	}
+	return ""
+}
+
+// titleFor resolves the display title for a session: the file's H1 wins,
+// falling back to the filename stem. The store's Title field is no longer
+// authoritative — this makes manual edits to the `.md` file show up in the UI.
+func titleFor(s Session) string {
+	if t := fileTitle(s.Path); t != "" {
+		return t
+	}
+	base := filepath.Base(s.Path)
+	return strings.TrimSuffix(base, filepath.Ext(base))
+}
+
+// setFileTitle rewrites the first `# heading` line of path to `# <newTitle>`.
+// If no heading exists, prepends one.
+func setFileTitle(path, newTitle string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := strings.Split(string(data), "\n")
+	replaced := false
+	for i, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "# ") {
+			lines[i] = "# " + newTitle
+			replaced = true
+			break
+		}
+		if i > 50 {
+			break
+		}
+	}
+	if !replaced {
+		lines = append([]string{"# " + newTitle, ""}, lines...)
+	}
+	return os.WriteFile(path, []byte(strings.Join(lines, "\n")), 0644)
 }
 
 var appURL string
@@ -549,18 +605,25 @@ func runServer(ln net.Listener, rootAbs string) error {
 						http.Error(w, "title cannot be empty", 400)
 						return
 					}
-					body.Title = &t
+					sess, ok := store.byID(id)
+					if !ok {
+						http.Error(w, "not found", 404)
+						return
+					}
+					if err := setFileTitle(sess.Path, t); err != nil {
+						http.Error(w, err.Error(), 500)
+						return
+					}
+					// Keep the store's Title in sync so legacy reads/backups
+					// don't drift. It's no longer authoritative — titleFor()
+					// reads the file — but there's no reason to let it rot.
+					_ = store.update(id, func(s *Session) { s.Title = t })
 				}
-				if err := store.update(id, func(s *Session) {
-					if body.Title != nil {
-						s.Title = *body.Title
+				if body.Pinned != nil {
+					if err := store.update(id, func(s *Session) { s.Pinned = *body.Pinned }); err != nil {
+						http.Error(w, err.Error(), 404)
+						return
 					}
-					if body.Pinned != nil {
-						s.Pinned = *body.Pinned
-					}
-				}); err != nil {
-					http.Error(w, err.Error(), 404)
-					return
 				}
 				w.WriteHeader(204)
 			default:
