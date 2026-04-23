@@ -8,7 +8,7 @@ Every change follows the same five phases. Don't skip 3 or 5 — they're the dif
 2. **Update the status file** (`sessions/<current>.md`). If there's an active orchestration session, move the task through its phases: add it to *Active tasks* when starting, move to *Done (awaiting confirmation)* with a one-line result when the code is landed, append a timestamped entry to the *Agent log*. Update `focus:` in the YAML front matter so the dashboard header reflects what's being worked on right now. Use `Edit` for partial updates; never rewrite the whole file.
 3. **Rebuild + restart** (if the change ships in the binary — see below). Kill the running exe, rebuild with the GUI flag, launch detached with `--no-open`. The exact commands are in the next section.
 4. **Verify.** Confirm the new process is up (`tasklist` + `curl` → 200). For UI changes, confirm via the user's open tab (it auto-reloads); for backend changes, hit the relevant endpoint with `curl` when it's easy to do so.
-5. **Commit.** Stage only the files you edited (`git add <paths>` — not `-A`). Write a HEREDOC commit message per the commit conventions in the Claude Code system prompt. Don't commit generated or scratch files (`data/`, `sessions/`, `tools/<scratch>/`).
+5. **Wait to commit until the user asks.** Do NOT run `git commit` at natural stopping points, after rebuilds, or after landing a feature — wait for the user's explicit instruction. When they ask, stage only the files you edited (`git add <paths>` — not `-A`) and use a HEREDOC commit message per the Claude Code system-prompt conventions. Don't commit generated or scratch files (`data/`, `sessions/`, `tools/<scratch>/`).
 
 ### What triggers a rebuild?
 
@@ -25,8 +25,8 @@ When in doubt: rebuild. It's cheap (~2s) and the user's tab auto-reloads.
 
 ### Committing
 
-- Commit at natural stopping points — after each user-visible improvement, not every micro-edit. A single `feat:` or `fix:` commit per feature/bug is ideal.
-- **Only commit when the user asks, or when completing a distinct task they requested.** Don't commit speculative edits.
+- **Never auto-commit.** Only run `git commit` when the user explicitly asks ("commit", "commit this", "commit the changes", etc.). Not after rebuilds, not at "natural stopping points", not after a feature "feels done".
+- When asked: stage specific file paths (not `-A`), one `feat:`/`fix:` commit per user-visible change is ideal, HEREDOC message focused on *why*.
 - The user has already seen the diff via the live dashboard; keep the message focused on *why* the change was made, not *what* (the diff already says what).
 
 ## Rebuild / restart workflow (required after code changes)
