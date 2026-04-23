@@ -314,7 +314,7 @@ body.dragging, body.dragging * { user-select: none; cursor: col-resize !importan
   border-left: 3px solid var(--accent); margin: .8em 0; padding: 2px 14px;
   color: var(--muted); background: var(--panel);
 }
-.md table { border-collapse: collapse; margin: .8em 0; }
+.md table { border-collapse: collapse; margin: .8em 0; width: 100%; }
 .md th, .md td { border: 1px solid var(--border); padding: 6px 10px; }
 .md th { background: var(--panel); }
 .md hr { border: 0; border-top: 1px solid var(--border); margin: 1.5em 0; }

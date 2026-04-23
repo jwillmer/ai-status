@@ -45,6 +45,27 @@ var skillFile []byte
 // the user to have the skill pre-installed.
 var skillPath string
 
+// pickFolderNative spawns a Windows FolderBrowserDialog via PowerShell and
+// returns the selected absolute path, or "" on cancel. Runs in-process so
+// the dialog parents to the tray (or, if no parent can be found, floats
+// standalone) and returns sync.
+func pickFolderNative() (string, error) {
+	script := `Add-Type -AssemblyName System.Windows.Forms;` +
+		`$f = New-Object System.Windows.Forms.FolderBrowserDialog;` +
+		`$f.Description = 'Select working folder';` +
+		`$f.ShowNewFolderButton = $true;` +
+		`if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.SelectedPath }`
+	cmd := exec.Command("powershell", "-NoProfile", "-STA", "-WindowStyle", "Hidden", "-Command", script)
+	// Hide the PowerShell console window that would otherwise flash on screen
+	// while the FolderBrowserDialog spools up.
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
 // freshClaudePrompt builds the single-arg prompt passed to `claude` when
 // starting a brand-new conversation for a session. It both loads the
 // embedded status-orchestrator skill and names the status file, so the
@@ -618,6 +639,23 @@ func runServer(ln net.Listener, rootAbs string) error {
 			return
 		}
 		writeJSON(w, map[string]any{"skillPath": skillPath})
+	})
+
+	mux.HandleFunc("/api/pick-folder", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method", 405)
+			return
+		}
+		folder, err := pickFolderNative()
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		if folder == "" {
+			w.WriteHeader(204) // user cancelled
+			return
+		}
+		writeJSON(w, map[string]any{"folder": folder})
 	})
 
 	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {

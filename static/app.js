@@ -44,7 +44,6 @@ const newFolderInput = $("#new-folder");
 const newFolderBrowse = $("#new-folder-browse");
 const newFolderPicker = $("#new-folder-picker");
 const newCancelBtn = $("#new-cancel");
-const newSkipBtn = $("#new-skip");
 
 const folderDialog = $("#folder-dialog");
 const folderForm = $("#folder-form");
@@ -99,14 +98,19 @@ function fmtRelative(date) {
   if (!date) return "never";
   const ms = Date.now() - date.getTime();
   const s = Math.max(0, Math.round(ms / 1000));
-  if (s < 5) return "just now";
-  if (s < 60) return `${s}s ago`;
+  // Coarse buckets — avoids a distracting per-second clock. The UI tick
+  // below is 30s, matching the minute-level resolution.
+  if (s < 10) return "just now";
+  if (s < 60) return "a moment ago";
+  if (s < 120) return "a minute ago";
   const m = Math.round(s / 60);
-  if (m < 60) return `${m}m ago`;
+  if (m < 60) return `${m} minutes ago`;
   const h = Math.round(m / 60);
-  if (h < 24) return `${h}h ago`;
+  if (h < 2) return "an hour ago";
+  if (h < 24) return `${h} hours ago`;
   const d = Math.round(h / 24);
-  if (d < 7) return `${d}d ago`;
+  if (d < 2) return "yesterday";
+  if (d < 7) return `${d} days ago`;
   return date.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
@@ -221,10 +225,10 @@ function updateUpdatedPill() {
   viewUpdated.classList.toggle("stale", ageSec > 300);
 }
 
-// tick relative times every second
+// tick relative times every 30s — matches the minute-level resolution of
+// fmtRelative(), no need for per-second updates.
 setInterval(() => {
   updateUpdatedPill();
-  // update sidebar item-updated text
   for (const li of document.querySelectorAll("#sidebar li[data-id]")) {
     const s = sessions.find(x => x.id === li.dataset.id);
     if (!s) continue;
@@ -233,7 +237,7 @@ setInterval(() => {
     const updated = s.updated ? new Date(s.updated) : null;
     meta.textContent = "upd. " + fmtRelative(updated);
   }
-}, 1000);
+}, 30000);
 
 async function loadSessions() {
   sessions = await api("/api/sessions");
@@ -290,25 +294,26 @@ if (newForm) {
   });
 }
 if (newCancelBtn) newCancelBtn.onclick = () => newDialog.close();
-if (newSkipBtn) newSkipBtn.onclick = () => submitNewSession(false);
-if (newFolderBrowse && newFolderPicker) {
-  newFolderBrowse.onclick = () => newFolderPicker.click();
-  newFolderPicker.addEventListener("change", () => {
-    const files = newFolderPicker.files;
-    if (!files || !files.length) return;
-    // webkitdirectory only gives us the relative folder name — no absolute path.
-    // Hint the user by filling in just the folder name so they can prepend the
-    // absolute parent path themselves.
-    const rel = files[0].webkitRelativePath || "";
-    const folderName = rel.split("/")[0] || "";
-    if (folderName && !newFolderInput.value) {
-      newFolderInput.value = folderName;
-      newFolderInput.focus();
-      // Select the whole field so the user can prepend the absolute path
-      newFolderInput.setSelectionRange(0, newFolderInput.value.length);
+async function pickFolderNative() {
+  // Backend spawns the Windows FolderBrowserDialog so we get a real absolute
+  // path instead of the sandboxed folder-name-only that <input webkitdirectory>
+  // gives. 204 → user cancelled.
+  const res = await fetch("/api/pick-folder", { method: "POST" });
+  if (res.status === 204) return "";
+  if (!res.ok) throw new Error(`pick-folder failed: ${res.status}`);
+  const data = await res.json();
+  return data.folder || "";
+}
+
+if (newFolderBrowse) {
+  newFolderBrowse.onclick = async () => {
+    try {
+      const folder = await pickFolderNative();
+      if (folder) newFolderInput.value = folder;
+    } catch (e) {
+      alert("Browse failed: " + e.message);
     }
-    newFolderPicker.value = "";
-  });
+  };
 }
 if (newDialog) {
   // Click outside to close
@@ -513,6 +518,10 @@ async function commitRename() {
     s.title = title;
     if (s.id === currentId) setDocTitle(title);
     renderList();
+    // Refresh metadata so the YAML `title:` shown in the metadata panel
+    // reflects the rename without waiting for a file-watch roundtrip.
+    await refreshMeta(currentId);
+    updateMetaPanelVisibility();
   } catch (e) {
     viewTitle.textContent = s.title;
     alert("Rename failed: " + e.message);
@@ -1123,20 +1132,15 @@ if (termCloseBtn) termCloseBtn.onclick = async () => {
   closeExitedTerminal(id);
 };
 
-if (folderBrowse && folderPicker) {
-  folderBrowse.onclick = () => folderPicker.click();
-  folderPicker.addEventListener("change", () => {
-    const files = folderPicker.files;
-    if (!files || !files.length) return;
-    const rel = files[0].webkitRelativePath || "";
-    const name = rel.split("/")[0] || "";
-    if (name && !folderInput.value) {
-      folderInput.value = name;
-      folderInput.focus();
-      folderInput.setSelectionRange(0, folderInput.value.length);
+if (folderBrowse) {
+  folderBrowse.onclick = async () => {
+    try {
+      const folder = await pickFolderNative();
+      if (folder) folderInput.value = folder;
+    } catch (e) {
+      alert("Browse failed: " + e.message);
     }
-    folderPicker.value = "";
-  });
+  };
 }
 if (folderCancelBtn) {
   folderCancelBtn.onclick = () => {
