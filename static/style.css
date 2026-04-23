@@ -377,13 +377,15 @@ body.dragging, body.dragging * { user-select: none; cursor: col-resize !importan
 }
 .dl-btn:hover { background: var(--accent-hover); }
 
-/* new-session dialog */
-#new-dialog {
+/* new-session dialog (also: folder-prompt dialog — same look) */
+#new-dialog,
+#folder-dialog {
   background: var(--panel); color: var(--fg); border: 1px solid var(--border);
   border-radius: 12px; padding: 0; max-width: 520px; width: calc(100% - 40px);
   box-shadow: 0 20px 60px rgba(0,0,0,.5);
 }
-#new-dialog::backdrop { background: rgba(0,0,0,.6); backdrop-filter: blur(2px); }
+#new-dialog::backdrop,
+#folder-dialog::backdrop { background: rgba(0,0,0,.6); backdrop-filter: blur(2px); }
 .new-body { padding: 20px 24px 20px; display: flex; flex-direction: column; gap: 8px; }
 .new-body h2 { margin: 0 0 8px; font-size: 18px; }
 .new-body label {
@@ -414,7 +416,9 @@ body.dragging, body.dragging * { user-select: none; cursor: col-resize !importan
   padding: 7px 14px; border-radius: 6px; cursor: pointer; font-size: 13px;
 }
 .new-actions button:hover { border-color: var(--accent); color: var(--accent); }
-#new-create {
+#new-create,
+#folder-save {
   background: var(--accent); color: #0f1115; border-color: var(--accent); font-weight: 600;
 }
-#new-create:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #0f1115; }
+#new-create:hover,
+#folder-save:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #0f1115; }
