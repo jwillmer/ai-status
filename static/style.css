@@ -223,19 +223,8 @@ body.dragging, body.dragging * { user-select: none; cursor: col-resize !importan
   background: var(--panel-2);
   position: relative;
 }
-#term-head {
-  padding: 6px 10px; border-bottom: 1px solid var(--border);
-  background: var(--panel);
-  display: flex; align-items: center; justify-content: flex-start; gap: 12px;
-  min-height: 36px;
-}
-.term-actions { display: flex; gap: 6px; flex-shrink: 0; }
-.term-actions button {
-  background: var(--panel-2); color: var(--fg); border: 1px solid var(--border);
-  padding: 5px 10px; border-radius: 6px; cursor: pointer; font-size: 12px;
-}
-.term-actions button:hover { border-color: var(--accent); color: var(--accent); }
-.term-actions button.danger:hover { border-color: var(--danger); color: var(--danger); }
+/* The cmd column's inner header bar was removed to give the terminal the
+   full column height — Show/Close cmd lives in the main header actions. */
 #term-folder-form {
   display: flex; gap: 6px; align-items: center;
   padding: 8px 14px; border-bottom: 1px solid var(--border);
