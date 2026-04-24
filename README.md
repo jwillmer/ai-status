@@ -22,10 +22,10 @@ Pairs with the bundled **status-orchestrator** skill, which turns Claude into an
 
 Open a Claude (or any) console directly inside the session's column — no Alt-Tab, no lost context:
 
-- ConPTY-backed on Windows; full key passthrough (Esc, Ctrl+B, etc.) so Claude Code's shortcuts work.
+- ConPTY-backed on Windows, `creack/pty`-backed on Linux & macOS; full key passthrough (Esc, Ctrl+B, etc.) so Claude Code's shortcuts work.
 - Terminal survives tab switches — the PTY lives on the server. `× Close` kills it explicitly; nothing else does.
 - `▶ Show cmd` reattaches to a running PTY, or resumes via `claude --resume <uuid>` when the session has a stored Claude session ID, or starts fresh otherwise.
-- `Open cmd` launches a detached Windows console in the session's working folder — same resume/fresh logic.
+- `Open cmd` launches a detached console in the session's working folder — same resume/fresh logic. Windows uses `cmd.exe`; Linux probes for `gnome-terminal`, `konsole`, `xfce4-terminal`, `xterm`, etc. (or honours `$TERMINAL`); macOS drives Terminal.app via AppleScript.
 - Ctrl+C copies selected text; Ctrl+V pastes. Ctrl+C with no selection forwards the SIGINT as usual.
 
 ### Live diff highlighting
@@ -56,20 +56,36 @@ Sessions store their metadata (`title`, `project_folder`, `claude_session`, `cre
 
 ### Other conveniences
 
-- **Native folder picker** via a real Windows `FolderBrowserDialog` (not the sandboxed `webkitdirectory` that only exposes the folder name).
-- **Open file** — opens the raw `.md` in your system's default editor.
+- **Native folder picker** — Windows uses the real `FolderBrowserDialog`; Linux uses `zenity` / `kdialog` / `yad` (first one found); macOS uses an AppleScript `choose folder` prompt. Beats the sandboxed `webkitdirectory` which only exposes the folder name.
+- **Open file** — opens the raw `.md` in your system's default editor (`start` on Windows, `xdg-open` on Linux, `open` on macOS).
 - **Renaming the title** rewrites the YAML `title:` field in place and keeps the sidebar / browser tab in sync.
 - **Auto-reload** — when the server restarts, the connection banner appears briefly; once the SSE stream reconnects, the tab reloads itself so you pick up new assets automatically.
 - **Relative timestamps** in coarse buckets ("just now", "a moment ago", "X minutes ago", "an hour ago", …) so nothing ticks every second.
 
 ## Requirements
 
-- Windows 10 / 11
+- Windows 10 / 11, or Ubuntu 22.04+ / any modern Linux desktop, or macOS 12+
 - Go 1.22+ (only to build from source)
+
+### Linux runtime extras
+
+- **Terminal emulator** (any of): `gnome-terminal`, `konsole`, `xfce4-terminal`, `mate-terminal`, `tilix`, `alacritty`, `kitty`, `terminator`, `xterm`. The app auto-detects; set `$TERMINAL` to force one. Already installed on stock Ubuntu Desktop.
+- **Folder picker**: `zenity` (GNOME), `kdialog` (KDE), or `yad`. `sudo apt install zenity` on Ubuntu.
+- **Default-handler opener**: `xdg-utils` (`xdg-open`). Already installed on Ubuntu Desktop.
+
+### Linux build extras
+
+`libgtk-3-dev` and `libayatana-appindicator3-dev` are required to build the system-tray integration:
+
+```
+sudo apt install build-essential libgtk-3-dev libayatana-appindicator3-dev pkg-config
+```
 
 ## Install
 
-Download the prebuilt `ai-status.exe` from the [GitHub Releases](https://github.com/jwillmer/ai-status/releases) page, or build from source:
+Download the prebuilt binary for your OS from the [GitHub Releases](https://github.com/jwillmer/ai-status/releases) page, or build from source.
+
+**Windows:**
 
 ```
 go build -ldflags="-H windowsgui" -o ai-status.exe
@@ -77,11 +93,16 @@ go build -ldflags="-H windowsgui" -o ai-status.exe
 
 The `-H windowsgui` flag hides the console window. Omit it while developing if you want stdout.
 
-## Run
+**Linux / macOS:**
 
 ```
-ai-status.exe
+go build -o ai-status
 ```
+
+## Run
+
+**Windows:** `ai-status.exe`  
+**Linux / macOS:** `./ai-status`
 
 Opens the browser automatically and adds a tray icon. Sessions and app data are written under the working directory (`./sessions/`, `./data/`).
 
@@ -104,7 +125,7 @@ Source: [`skill/status-orchestrator/SKILL.md`](skill/status-orchestrator/SKILL.m
 
 ## Usage
 
-1. Launch `ai-status.exe`. The dashboard opens at `http://127.0.0.1:7879`.
+1. Launch `ai-status` (or `ai-status.exe` on Windows). The dashboard opens at `http://127.0.0.1:7879`.
 2. Click **New session** — a fresh `.md` file is created under `sessions/`.
 3. Click the session title to copy its absolute path.
 4. In Claude, paste the path and ask it to use it (the skill recognises the pattern automatically).

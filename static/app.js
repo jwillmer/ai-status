@@ -771,9 +771,16 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
-let appConfig = { skillPath: "" };
+let appConfig = { skillPath: "", os: "windows", pathPlaceholder: "" };
 async function loadConfig() {
   try { appConfig = await api(`/api/config`); } catch {}
+  // Swap the folder-input placeholders so Linux/macOS users see a POSIX
+  // path example instead of the Windows-shaped default in the HTML.
+  if (appConfig && appConfig.pathPlaceholder) {
+    document.querySelectorAll(
+      "#new-folder, #term-folder-input, #folder-input"
+    ).forEach((el) => { el.placeholder = appConfig.pathPlaceholder; });
+  }
 }
 
 /* ---------------------------------------------------------------------------
