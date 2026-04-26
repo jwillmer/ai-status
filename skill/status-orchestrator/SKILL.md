@@ -11,10 +11,28 @@ You are the orchestrator for this session. A status `.md` file is your dashboard
 
 The user provides a path such as `C:\Projects\GitHub\ai\status-updates\sessions\<id>.md`. Treat it as `$STATUS_FILE` for the rest of the session.
 
-- If the user has not provided a path, ask once. Do not proceed without one.
+- If the user has not provided a path, **create one yourself via the AI Status API** (see §1a). Only fall back to asking the user if the API isn't reachable.
 - If the file does not exist, create it with the template below.
 - If it exists with user content (e.g. a title), preserve the title and append the orchestrator sections below it.
 - **Always record a Session reference block at the head of the file** (see §3). It lives as **YAML front matter** — a `---`-fenced block at the very top — so it stays machine-readable but renders invisibly in the AI Status dashboard (the renderer uses `goldmark-meta` to consume it). Its job is to capture the **Claude Code session ID** so the user can later run `/resume <id>` in Claude Code and pick up the exact conversation that was driving this status file.
+
+### 1a. Creating a session via the AI Status API
+
+The AI Status dashboard runs at `http://127.0.0.1:7879` and exposes `POST /api/sessions`. When the skill activates without a status path, prefer creating the session yourself rather than asking the user — they're already in the dashboard, the result will appear there immediately.
+
+1. Pick a short, specific title from the user's first request (e.g. `Login refactor`, `Postgres migration prep`). If nothing yet suggests a title, omit it — the server falls back to a timestamp and you can rename later (§4).
+2. Resolve the **project folder**: the cwd where Claude Code is running, from your platform/env context. This is what `project_folder:` will be set to in the file's YAML front matter.
+3. POST it:
+   ```bash
+   curl -sS -X POST http://127.0.0.1:7879/api/sessions \
+     -H 'Content-Type: application/json' \
+     -d '{"title":"<title>","folder":"<project-folder>"}'
+   ```
+   Both fields are optional; sending `folder` lets the server pre-populate `project_folder:` for you.
+4. The JSON response includes a `path` field — that's your `$STATUS_FILE`. The server has already written the §3 skeleton (YAML front matter + section scaffold). You still need to fill in `claude_session:` per §1's discovery steps; everything else is in place.
+5. If the call fails (connection refused, non-2xx, or the host has the dashboard on a different port), the app isn't running. Tell the user in one line and ask for a path, or ask them to start the app.
+
+Reply to the user once with the path you created so they know what to open: `Created <path>. Orchestrating via that file.`
 
 ### Session reference block — what to capture
 
