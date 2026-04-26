@@ -126,7 +126,12 @@ main { grid-area: main; }
   position: sticky; top: 0; background: var(--panel); z-index: 1;
   gap: 8px;
 }
-.brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.brand {
+  display: flex; align-items: center; gap: 10px; min-width: 0;
+  background: transparent; border: 0; padding: 0; cursor: pointer;
+  font: inherit; color: inherit; text-align: left;
+}
+.brand:hover h1 { color: var(--accent); }
 .logo { width: 22px; height: 22px; display: block; }
 .logo.big { width: 40px; height: 40px; }
 .side-head h1 { font-size: 15px; margin: 0; letter-spacing: .3px; color: var(--fg); }
@@ -170,11 +175,22 @@ main { grid-area: main; }
   padding: 8px 10px; cursor: pointer; font: inherit; font-size: 13px;
   display: flex; align-items: center; gap: 8px;
 }
-#theme-btn { flex: 1; justify-content: center; }
 .foot-icon-btn { width: 36px; padding: 0 !important; justify-content: center; }
 .side-foot button:hover { border-color: var(--accent); color: var(--accent); }
 #theme-icon { display: flex; align-items: center; }
-#theme-label { text-align: left; }
+.build-sha {
+  flex: 1; min-width: 0;
+  font-size: 11px; color: var(--muted); text-decoration: none;
+  display: flex; align-items: center; gap: 6px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+.build-sha:hover { color: var(--accent); }
+.build-sha .build-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--muted);
+  flex-shrink: 0;
+}
+.build-sha.is-ok .build-dot { background: var(--ok); }
+.build-sha.is-behind .build-dot { background: var(--accent); }
 .arch-head:hover { color: var(--fg); }
 #sidebar ul { list-style: none; margin: 0; padding: 0; }
 #sidebar li {

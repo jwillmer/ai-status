@@ -902,11 +902,38 @@ function showUpdateError(phase, error) {
   });
 }
 
-async function checkForUpdate() {
-  if (!updateBanner) return;
-  // Silent on failure — conn-banner already covers "server unreachable".
-  try { renderUpdateBanner(await api(`/api/version`)); } catch {}
+const buildShaEl = $("#build-sha");
+function renderBuildSha(info) {
+  if (!buildShaEl || !info || !info.current) return;
+  const short = info.current.slice(0, 7);
+  buildShaEl.textContent = "";
+  const dot = document.createElement("span");
+  dot.className = "build-dot";
+  buildShaEl.appendChild(dot);
+  buildShaEl.appendChild(document.createTextNode(info.version || short));
+  buildShaEl.href = `https://github.com/jwillmer/ai-status/commit/${info.current}`;
+  buildShaEl.classList.remove("is-ok", "is-behind");
+  if (info.updateAvailable) {
+    buildShaEl.classList.add("is-behind");
+    buildShaEl.title = `Build ${short} — ${info.behind > 0 ? info.behind + " commit" + (info.behind === 1 ? "" : "s") + " behind" : "update available"}`;
+  } else {
+    buildShaEl.classList.add("is-ok");
+    buildShaEl.title = `Build ${short} — up to date`;
+  }
+  buildShaEl.hidden = false;
 }
+
+async function checkForUpdate() {
+  // Silent on failure — conn-banner already covers "server unreachable".
+  try {
+    const info = await api(`/api/version`);
+    renderUpdateBanner(info);
+    renderBuildSha(info);
+  } catch {}
+}
+
+const brandReload = $("#brand-reload");
+if (brandReload) brandReload.onclick = () => location.reload();
 
 function closeUpdateStream() {
   if (!updateEvtSource) return;
@@ -959,7 +986,6 @@ const THEME_ORDER = ["system", "light", "dark"];
 const THEME_ICONS = { system: ICONS.system, light: ICONS.light, dark: ICONS.dark };
 const THEME_LABELS = { system: "System", light: "Light", dark: "Dark" };
 const themeIconEl = $("#theme-icon");
-const themeLabelEl = $("#theme-label");
 
 function getTheme() {
   const m = document.cookie.match(/(?:^|;\s*)theme=([^;]+)/);
@@ -970,7 +996,6 @@ function applyTheme(theme) {
   if (theme === "system") document.documentElement.removeAttribute("data-theme");
   else document.documentElement.setAttribute("data-theme", theme);
   if (themeIconEl) themeIconEl.innerHTML = THEME_ICONS[theme];
-  if (themeLabelEl) themeLabelEl.textContent = THEME_LABELS[theme];
   if (themeBtn) themeBtn.title = THEME_LABELS[theme] + " theme — click to cycle";
 }
 function setTheme(theme) {
