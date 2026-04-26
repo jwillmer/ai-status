@@ -524,14 +524,16 @@ func main() {
 				case <-quitItem.ClickedCh:
 					termManager.KillAll()
 					systray.Quit()
-					return
+					// systray.Run() unwind is unreliable on Linux/AppIndicator;
+					// guarantee process exit so Quit always works.
+					os.Exit(0)
 				case err := <-srvErr:
 					if err != nil {
 						log.Println("server:", err)
 					}
 					termManager.KillAll()
 					systray.Quit()
-					return
+					os.Exit(0)
 				}
 			}
 		}()
