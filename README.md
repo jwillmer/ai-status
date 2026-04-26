@@ -85,6 +85,17 @@ sudo apt install build-essential libgtk-3-dev libayatana-appindicator3-dev pkg-c
 
 Download the prebuilt binary for your OS from the [GitHub Releases](https://github.com/jwillmer/ai-status/releases) page, or build from source.
 
+### One-shot dependency install (Linux & macOS)
+
+```
+./scripts/install-deps.sh           # interactive: asks before sudo
+./scripts/install-deps.sh --yes     # non-interactive
+```
+
+Detects `apt` / `dnf` / `pacman` / `zypper` (Linux) or `brew` (macOS), checks each dep with `pkg-config` / `command -v`, and installs only what's missing. Idempotent — safe to re-run.
+
+### Build
+
 **Windows:**
 
 ```
@@ -96,13 +107,17 @@ The `-H windowsgui` flag hides the console window. Omit it while developing if y
 **Linux / macOS:**
 
 ```
-go build -o ai-status
+./scripts/build.sh           # kill running instance, build, relaunch detached, verify
+./scripts/build.sh -b        # build only
+./scripts/build.sh -n        # kill + build, don't relaunch
 ```
+
+Or directly: `go build -o ai-status .`
 
 ## Run
 
 **Windows:** `ai-status.exe`  
-**Linux / macOS:** `./ai-status`
+**Linux / macOS:** `./ai-status` (or `./scripts/build.sh` to rebuild and relaunch in one step)
 
 Opens the browser automatically and adds a tray icon. Sessions and app data are written under the working directory (`./sessions/`, `./data/`).
 

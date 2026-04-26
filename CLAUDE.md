@@ -72,18 +72,23 @@ Windows key rules:
 
 ### Linux / macOS
 
+Use the wrapper script — it does the kill → build → relaunch → verify dance:
+
 ```bash
-# 1. Stop the running instance.
+./scripts/build.sh           # full restart cycle
+./scripts/build.sh -b        # build only
+./scripts/build.sh -n        # kill + build, don't relaunch
+```
+
+If you need to set up a fresh box first: `./scripts/install-deps.sh` (detects apt/dnf/pacman/zypper or brew, installs only what's missing, idempotent).
+
+The script is the equivalent of:
+
+```bash
 pkill -x ai-status || true
-
-# 2. Rebuild — plain build, no Windows-only ldflags.
 go build -o ai-status .
-
-# 3. Launch detached without opening a browser tab.
 ./ai-status --no-open >/tmp/ai-status.log 2>&1 &
 disown
-
-# 4. Verify the process is up and answering.
 sleep 1 && pgrep -x ai-status
 curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7879/   # expect 200
 ```
