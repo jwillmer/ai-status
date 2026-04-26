@@ -1,5 +1,6 @@
 # binary + build artifacts
 /ai-status.exe
+/ai-status
 /status-updates.exe
 /*.log
 

@@ -31,7 +31,9 @@ When in doubt: rebuild. It's cheap (~2s) and the user's tab auto-reloads.
 
 ## Rebuild / restart workflow (required after code changes)
 
-Whenever you change **any source that ships in the binary** — `main.go`, anything under `static/` (HTML/CSS/JS), `skill/`, or the embedded icon — you must rebuild `ai-status.exe` and restart the running service so the user sees the change immediately. Do not leave it to the user.
+Whenever you change **any source that ships in the binary** — `main.go`, anything under `static/` (HTML/CSS/JS), `skill/`, or the embedded icon — you must rebuild the binary and restart the running service so the user sees the change immediately. Do not leave it to the user.
+
+### Windows
 
 Run this sequence after edits land (verified-working on this machine):
 
@@ -59,7 +61,7 @@ curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7879/   # expect 200
 
 You can chain step 1–3 in a single Bash call (`&&` between the kill/build and a blank-line before the launch line) — the launch runs in the background so the Bash tool returns immediately.
 
-Key rules:
+Windows key rules:
 
 - **Always pass `--no-open`.** The user already has a browser tab pointed at the dashboard; opening another is noise.
 - **Always pass `-ldflags="-H windowsgui"`.** Without it, running the exe opens a visible cmd window behind the tray icon.
@@ -67,6 +69,37 @@ Key rules:
 - **Kill by PID, not by image name.** `taskkill //IM ai-status.exe` returns "Access is denied"; the PID form works.
 - **Don't use `cmd.exe //c start …` for detachment** — it also hits Access denied under the Bash tool. Plain `&` is sufficient.
 - **Don't rebuild without killing first.** Go can't replace a running exe on Windows — the build will fail with "The process cannot access the file".
+
+### Linux / macOS
+
+Use the wrapper script — it does the kill → build → relaunch → verify dance:
+
+```bash
+./scripts/build.sh           # full restart cycle
+./scripts/build.sh -b        # build only
+./scripts/build.sh -n        # kill + build, don't relaunch
+```
+
+If you need to set up a fresh box first: `./scripts/install-deps.sh` (detects apt/dnf/pacman/zypper or brew, installs only what's missing, idempotent).
+
+The script is the equivalent of:
+
+```bash
+pkill -x ai-status || true
+go build -o ai-status .
+./ai-status --no-open >/tmp/ai-status.log 2>&1 &
+disown
+sleep 1 && pgrep -x ai-status
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:7879/   # expect 200
+```
+
+Linux/macOS key rules:
+
+- **Always pass `--no-open`** — same reason as Windows.
+- **Build needs GTK headers** for the tray icon: `sudo apt install libgtk-3-dev libayatana-appindicator3-dev pkg-config`. If you forget, `go build` fails at `pkg-config -- ayatana-appindicator3-0.1`.
+- **Use `pkill -x ai-status`** — the `-x` is important, otherwise it matches every process whose cmdline contains the string.
+- **Redirect logs** (`>/tmp/ai-status.log 2>&1`) when launching detached. Unlike the Windows GUI build, the Linux binary writes the startup log banner to stdout.
+- **Don't rebuild without killing first.** Replacing a running binary on Linux is safe at the filesystem layer (inode survives), but the old version keeps serving requests until it exits.
 
 ## Auto-reload in the browser
 
@@ -76,8 +109,8 @@ If you add new client-side features that need fresh assets on reload, no extra w
 
 ## Build tooling
 
-- Go binary lives at `C:\Program Files\Go\bin\go.exe` (not on `$PATH` in this shell).
-- `go build -o ai-status.exe .` from the repo root. Windows icon resource comes from `rsrc_windows_amd64.syso` (prebuilt, don't touch).
+- **Windows:** Go binary lives at `C:\Program Files\Go\bin\go.exe` (not on `$PATH` in this shell). `go build -ldflags="-H windowsgui" -o ai-status.exe .` from the repo root. Windows icon resource comes from `rsrc_windows_amd64.syso` (prebuilt, don't touch).
+- **Linux / macOS:** `go build -o ai-status .` from the repo root. Platform code is split under build tags: `pty_windows.go` / `pty_unix.go` for the PTY backend, `platform_windows.go` / `platform_unix.go` for folder picker, file-open, terminal-emulator launch, and tray-icon wrapping. Add new OS-specific code to the matching pair; keep `main.go` and `terminal.go` platform-neutral.
 
 ## Do not use the PowerShell tool
 

@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bytes"
 	"embed"
-	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -12,10 +10,10 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -44,27 +42,6 @@ var skillFile []byte
 // point at it so the agent loads the orchestrator role without requiring
 // the user to have the skill pre-installed.
 var skillPath string
-
-// pickFolderNative spawns a Windows FolderBrowserDialog via PowerShell and
-// returns the selected absolute path, or "" on cancel. Runs in-process so
-// the dialog parents to the tray (or, if no parent can be found, floats
-// standalone) and returns sync.
-func pickFolderNative() (string, error) {
-	script := `Add-Type -AssemblyName System.Windows.Forms;` +
-		`$f = New-Object System.Windows.Forms.FolderBrowserDialog;` +
-		`$f.Description = 'Select working folder';` +
-		`$f.ShowNewFolderButton = $true;` +
-		`if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.SelectedPath }`
-	cmd := exec.Command("powershell", "-NoProfile", "-STA", "-WindowStyle", "Hidden", "-Command", script)
-	// Hide the PowerShell console window that would otherwise flash on screen
-	// while the FolderBrowserDialog spools up.
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
-}
 
 // freshClaudePrompt builds the single-arg prompt passed to `claude` when
 // starting a brand-new conversation for a session. It both loads the
@@ -527,7 +504,8 @@ func main() {
 	}
 
 	onReady := func() {
-		systray.SetIcon(iconBytes())
+		sub, _ := fs.Sub(staticFS, "static")
+		systray.SetIcon(trayIconBytes(sub))
 		systray.SetTitle("")
 		systray.SetTooltip("AI Status — " + appURL)
 
@@ -546,14 +524,16 @@ func main() {
 				case <-quitItem.ClickedCh:
 					termManager.KillAll()
 					systray.Quit()
-					return
+					// systray.Run() unwind is unreliable on Linux/AppIndicator;
+					// guarantee process exit so Quit always works.
+					os.Exit(0)
 				case err := <-srvErr:
 					if err != nil {
 						log.Println("server:", err)
 					}
 					termManager.KillAll()
 					systray.Quit()
-					return
+					os.Exit(0)
 				}
 			}
 		}()
@@ -609,7 +589,7 @@ func runServer(ln net.Listener, rootAbs string) error {
 	mux.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/x-icon")
 		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
-		w.Write(iconBytes())
+		w.Write(faviconBytes(sub))
 	})
 	mux.HandleFunc("/download/status-orchestrator.skill", func(w http.ResponseWriter, r *http.Request) {
 		data, err := fs.ReadFile(sub, "status-orchestrator.skill")
@@ -638,7 +618,11 @@ func runServer(ln net.Listener, rootAbs string) error {
 			http.Error(w, "method", 405)
 			return
 		}
-		writeJSON(w, map[string]any{"skillPath": skillPath})
+		writeJSON(w, map[string]any{
+			"skillPath":       skillPath,
+			"os":              runtimeOS(),
+			"pathPlaceholder": pathPlaceholder(),
+		})
 	})
 
 	mux.HandleFunc("/api/pick-folder", func(w http.ResponseWriter, r *http.Request) {
@@ -908,11 +892,9 @@ _(free-form scratchpad — decisions, links, constraints)_
 				http.Error(w, "not found", 404)
 				return
 			}
-			// Windows: `cmd /c start "" <path>` hands the file to the system
-			// default handler. Empty `""` is the window-title arg that `start`
-			// consumes, so the real path always lands as the file arg.
-			cmd := exec.Command("cmd", "/c", "start", "", sess.Path)
-			if err := cmd.Start(); err != nil {
+			// Delegate to the platform's default-handler invocation
+			// (`cmd /c start` on Windows, `xdg-open` on Linux, `open` on macOS).
+			if err := openFileInDefaultApp(sess.Path); err != nil {
 				http.Error(w, err.Error(), 500)
 				return
 			}
@@ -933,20 +915,15 @@ _(free-form scratchpad — decisions, links, constraints)_
 				http.Error(w, "session has no folder", 400)
 				return
 			}
-			// Use `cmd /c start "" /D <folder> cmd /k claude ...` so the
-			// new cmd window is fully detached from the server (which is a
-			// GUI build with no console / no std handles). `start /D` sets
-			// the child's cwd without needing `cd /d`, and each claude arg
-			// is passed as its own Go exec arg — Go's EscapeArg handles
-			// spaces in the fallback prompt cleanly, no embedded quotes.
-			args := []string{"/c", "start", "", "/D", folder, "cmd.exe", "/k", "claude"}
+			// Resume existing Claude session when we have a UUID; otherwise
+			// hand over the orchestrator prompt so Claude loads the skill.
+			var claudeArgs []string
 			if claudeSession != "" {
-				args = append(args, "--resume", claudeSession)
+				claudeArgs = []string{"--resume", claudeSession}
 			} else {
-				args = append(args, freshClaudePrompt(sess.Path))
+				claudeArgs = []string{freshClaudePrompt(sess.Path)}
 			}
-			cmd := exec.Command("cmd", args...)
-			if err := cmd.Start(); err != nil {
+			if err := openShellInFolder(folder, claudeArgs); err != nil {
 				http.Error(w, err.Error(), 500)
 				return
 			}
@@ -1040,26 +1017,8 @@ func writeJSON(w http.ResponseWriter, v any) {
 	json.NewEncoder(w).Encode(v)
 }
 
-// iconBytes returns an ICO wrapping the embedded 32x32 tray-icon.png.
-// Used for the system-tray icon on Windows and as /favicon.ico fallback.
-func iconBytes() []byte {
-	sub, _ := fs.Sub(staticFS, "static")
-	pngData, err := fs.ReadFile(sub, "tray-icon.png")
-	if err != nil || len(pngData) == 0 {
-		return nil
-	}
-	var ico bytes.Buffer
-	binary.Write(&ico, binary.LittleEndian, uint16(0))            // reserved
-	binary.Write(&ico, binary.LittleEndian, uint16(1))            // type=icon
-	binary.Write(&ico, binary.LittleEndian, uint16(1))            // count
-	ico.WriteByte(32)                                             // width
-	ico.WriteByte(32)                                             // height
-	ico.WriteByte(0)                                              // no palette
-	ico.WriteByte(0)                                              // reserved
-	binary.Write(&ico, binary.LittleEndian, uint16(1))            // planes
-	binary.Write(&ico, binary.LittleEndian, uint16(32))           // bpp
-	binary.Write(&ico, binary.LittleEndian, uint32(len(pngData))) // size
-	binary.Write(&ico, binary.LittleEndian, uint32(22))           // offset
-	ico.Write(pngData)
-	return ico.Bytes()
+// runtimeOS returns a short OS identifier for the UI to branch on
+// (e.g. path-placeholder shape, button copy).
+func runtimeOS() string {
+	return runtime.GOOS
 }

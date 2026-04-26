@@ -14,7 +14,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/UserExistsError/conpty"
 	"github.com/gorilla/websocket"
 	"gopkg.in/yaml.v2"
 )
@@ -219,8 +218,8 @@ func parseSessionMeta(path string) (folder, claudeSession, focus string, err err
 // If no YAML block is present, one is prepended.
 //
 // `claude_session` is omitted when empty. `project_folder` is always written.
-// Values are quoted with single quotes to survive Windows backslash paths and
-// other YAML edge cases.
+// Values are single-quoted so Windows backslash paths and other YAML edge
+// cases survive intact.
 func writeSessionRef(path, folder, claudeSession string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -283,7 +282,8 @@ func writeSessionRef(path, folder, claudeSession string) error {
 }
 
 // yamlQuote wraps a scalar in single quotes, escaping embedded single quotes
-// per YAML spec (double them). Safe for Windows paths containing `\`.
+// per YAML spec (double them). Safe for Windows paths containing `\` and for
+// POSIX paths with spaces or colons.
 func yamlQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
 }
@@ -293,14 +293,14 @@ func yamlQuote(s string) string {
 const ringCap = 64 * 1024
 
 type Terminal struct {
-	mu          sync.Mutex
-	cpty        *conpty.ConPty
-	folder      string
-	ring        []byte
-	subs        map[chan []byte]struct{}
-	done        bool
-	exitCode    int
-	cancel      context.CancelFunc
+	mu       sync.Mutex
+	pty      ptyIO
+	folder   string
+	ring     []byte
+	subs     map[chan []byte]struct{}
+	done     bool
+	exitCode int
+	cancel   context.CancelFunc
 }
 
 type TerminalManager struct {
@@ -342,15 +342,13 @@ func (m *TerminalManager) Start(sessionID, folder string, cols, rows int) error 
 	if rows <= 0 {
 		rows = 24
 	}
-	cpty, err := conpty.Start("cmd.exe",
-		conpty.ConPtyWorkDir(folder),
-		conpty.ConPtyDimensions(cols, rows))
+	handle, err := startPTY(folder, cols, rows)
 	if err != nil {
 		return err
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	t := &Terminal{
-		cpty:   cpty,
+		pty:    handle,
 		folder: folder,
 		ring:   make([]byte, 0, ringCap),
 		subs:   map[chan []byte]struct{}{},
@@ -383,7 +381,7 @@ func (t *Terminal) appendRing(p []byte) {
 func (t *Terminal) readLoop(sessionID string) {
 	buf := make([]byte, 4096)
 	for {
-		n, err := t.cpty.Read(buf)
+		n, err := t.pty.Read(buf)
 		if n > 0 {
 			chunk := make([]byte, n)
 			copy(chunk, buf[:n])
@@ -404,7 +402,7 @@ func (t *Terminal) readLoop(sessionID string) {
 }
 
 func (t *Terminal) waitLoop(ctx context.Context, sessionID string) {
-	code, err := t.cpty.Wait(ctx)
+	code, err := t.pty.Wait(ctx)
 	t.mu.Lock()
 	t.done = true
 	if err == nil {
@@ -427,12 +425,12 @@ func (m *TerminalManager) Write(sessionID string, data []byte) error {
 	}
 	t.mu.Lock()
 	done := t.done
-	cpty := t.cpty
+	handle := t.pty
 	t.mu.Unlock()
 	if done {
 		return fmt.Errorf("terminal exited")
 	}
-	_, err := cpty.Write(data)
+	_, err := handle.Write(data)
 	return err
 }
 
@@ -443,12 +441,12 @@ func (m *TerminalManager) Resize(sessionID string, cols, rows int) error {
 	}
 	t.mu.Lock()
 	done := t.done
-	cpty := t.cpty
+	handle := t.pty
 	t.mu.Unlock()
 	if done {
 		return fmt.Errorf("terminal exited")
 	}
-	return cpty.Resize(cols, rows)
+	return handle.Resize(cols, rows)
 }
 
 func (m *TerminalManager) Kill(sessionID string) error {
@@ -459,19 +457,19 @@ func (m *TerminalManager) Kill(sessionID string) error {
 	t.mu.Lock()
 	done := t.done
 	cancel := t.cancel
-	cpty := t.cpty
+	handle := t.pty
 	t.mu.Unlock()
 	if done {
 		return nil
 	}
-	// Cancel the Wait context and close the ConPty exactly once. The readLoop
+	// Cancel the Wait context and close the PTY exactly once. The readLoop
 	// will observe EOF and exit; waitLoop will finalize exitCode and close
-	// subscribers. waitLoop no longer calls cpty.Close() — that would be a
-	// double-close and previously crashed the process.
+	// subscribers. waitLoop does not call handle.Close() — that would be a
+	// double-close (crashes on ConPTY) and is handled here instead.
 	if cancel != nil {
 		cancel()
 	}
-	return cpty.Close()
+	return handle.Close()
 }
 
 // Status returns running, exitCode, hasTerminal.
