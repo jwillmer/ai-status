@@ -282,47 +282,49 @@ func selfUpdatePreconditions(gi gitInfo, info updateInfo) (bool, string) {
 	return true, ""
 }
 
-// fetchUpstream populates info.Latest, info.LatestMessage, and info.Behind
-// from a single GitHub API call when we know the local SHA — /compare
-// returns the head commit (main's tip) plus ahead_by in one response.
-// When the local SHA is unknown we can't form a compare URL, so fall back
-// to /commits/main and leave Behind at 0.
+// fetchUpstream populates info.Latest, info.LatestMessage, and info.Behind.
+// When the local SHA is known to GitHub we use /compare to get tip + behind
+// count in one call. When it isn't (unpushed commit, or no local SHA at
+// all) we fall back to /commits/main; Behind stays at 0 since there's no
+// merge base to count against.
 func fetchUpstream(ctx context.Context, info *updateInfo) error {
-	if info.Current == "" {
-		sha, msg, err := fetchLatestCommit(ctx)
-		if err != nil {
+	if info.Current != "" {
+		url := fmt.Sprintf("https://api.github.com/repos/%s/compare/%s...main", repoSlug, info.Current)
+		var payload struct {
+			AheadBy int `json:"ahead_by"`
+			Commits []struct {
+				SHA    string `json:"sha"`
+				Commit struct {
+					Message string `json:"message"`
+				} `json:"commit"`
+			} `json:"commits"`
+		}
+		err := githubGet(ctx, url, &payload)
+		if err == nil {
+			info.Behind = payload.AheadBy
+			if n := len(payload.Commits); n > 0 {
+				head := payload.Commits[n-1]
+				info.Latest = head.SHA
+				info.LatestMessage = strings.SplitN(head.Commit.Message, "\n", 2)[0]
+			} else {
+				// ahead_by == 0 → main is at our SHA.
+				info.Latest = info.Current
+			}
+			return nil
+		}
+		// /compare 404s when GitHub doesn't recognise the base SHA, e.g.
+		// the user has local commits that haven't been pushed. Fall through
+		// to /commits/main so we can still report main's tip.
+		if !strings.Contains(err.Error(), "HTTP 404") {
 			return err
 		}
-		info.Latest = sha
-		info.LatestMessage = msg
-		return nil
 	}
-
-	url := fmt.Sprintf("https://api.github.com/repos/%s/compare/%s...main", repoSlug, info.Current)
-	var payload struct {
-		AheadBy int `json:"ahead_by"`
-		Commits []struct {
-			SHA    string `json:"sha"`
-			Commit struct {
-				Message string `json:"message"`
-			} `json:"commit"`
-		} `json:"commits"`
-		BaseCommit struct {
-			SHA string `json:"sha"`
-		} `json:"base_commit"`
-	}
-	if err := githubGet(ctx, url, &payload); err != nil {
+	sha, msg, err := fetchLatestCommit(ctx)
+	if err != nil {
 		return err
 	}
-	info.Behind = payload.AheadBy
-	if n := len(payload.Commits); n > 0 {
-		head := payload.Commits[n-1]
-		info.Latest = head.SHA
-		info.LatestMessage = strings.SplitN(head.Commit.Message, "\n", 2)[0]
-	} else {
-		// AheadBy == 0 → main is at our SHA (no commits between).
-		info.Latest = info.Current
-	}
+	info.Latest = sha
+	info.LatestMessage = msg
 	return nil
 }
 

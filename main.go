@@ -587,6 +587,19 @@ func runServer(ln net.Listener, rootAbs string) error {
 		log.Printf("skill write: %v", err)
 	}
 
+	// Warm the version cache in the background so the first /api/version
+	// call from the browser is served from cache instead of waiting on
+	// GitHub. Non-blocking: a slow or failed lookup never delays startup
+	// or the listener.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		info := fetchUpdateInfo(ctx)
+		if info.UpdateAvailable {
+			log.Printf("update available: %s → %s (%d behind)", info.Current, info.Latest, info.Behind)
+		}
+	}()
+
 	h := newHub()
 	prev := newPrevCache()
 
