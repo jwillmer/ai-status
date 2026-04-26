@@ -756,6 +756,25 @@ initNotifyState();
 startGlobalStream();
 /* --- end notifications --- */
 
+// Obsidian-style wikilinks render as <a class="wikilink" data-wikilink="…">.
+// Resolve the target against the loaded sessions list (case-insensitive
+// match against the filename stem) and switch to it. Unmatched targets
+// no-op so a click on a stale link doesn't navigate the page somewhere
+// unexpected.
+viewEl.addEventListener("click", (e) => {
+  const a = e.target.closest("a.wikilink");
+  if (!a) return;
+  e.preventDefault();
+  const target = (a.dataset.wikilink || "").toLowerCase();
+  if (!target) return;
+  const match = sessions.find(s => {
+    const base = (s.path || "").split(/[\\/]/).pop() || "";
+    const stem = base.replace(/\.md$/i, "");
+    return stem.toLowerCase() === target;
+  });
+  if (match) openSession(match.id);
+});
+
 helpBtn.onclick = () => helpDialog.showModal();
 helpClose.onclick = () => helpDialog.close();
 helpDialog.addEventListener("click", (e) => {

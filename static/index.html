@@ -186,6 +186,14 @@
       <li>The app lives in the system tray — closing the tab leaves the server running. Quit only from the tray.</li>
       <li><kbd>Ctrl</kbd>+<kbd>N</kbd> = new session.</li>
     </ul>
+
+    <h3>Use your own folder (Obsidian, iCloud, Dropbox…)</h3>
+    <p>Sessions are just <code>.md</code> files. Point AI Status at any folder and it will pick up every non-hidden <code>.md</code> file inside as a session — and live-render whatever an external editor writes to them.</p>
+    <p>Edit <code>data/settings.json</code> next to the binary and set <code>sessions_folder</code> to an absolute path:</p>
+    <pre><code>{
+  "sessions_folder": "/Users/me/Obsidian/MyVault/AI-Status"
+}</code></pre>
+    <p class="hint">Restart the app after changing the file. An empty value falls back to <code>./sessions</code>. Hidden files/folders (anything starting with <code>.</code>, e.g. <code>.obsidian/</code>) and non-<code>.md</code> files are skipped automatically. Obsidian wikilinks <code>[[note]]</code> and image embeds <code>![[image.png]]</code> render natively; clicking a wikilink switches to a session whose filename matches.</p>
   </div>
 </dialog>
 

@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -263,7 +264,7 @@ func slug(s string) string {
 }
 
 var md = goldmark.New(
-	goldmark.WithExtensions(extension.GFM, extension.Typographer, meta.Meta),
+	goldmark.WithExtensions(extension.GFM, extension.Typographer, meta.Meta, &wikilinkExt{}),
 	goldmark.WithParserOptions(parser.WithAutoHeadingID()),
 	goldmark.WithRendererOptions(html.WithUnsafe()),
 )
@@ -565,18 +566,23 @@ func main() {
 }
 
 func runServer(ln net.Listener, rootAbs string) error {
-	sessDir := filepath.Join(rootAbs, "sessions")
 	dataDir := filepath.Join(rootAbs, "data")
-	if err := os.MkdirAll(sessDir, 0755); err != nil {
-		return err
-	}
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		return err
 	}
+	settings := loadSettings(rootAbs, filepath.Join(dataDir, "settings.json"))
+	sessDir := settings.resolvedSessionsFolder()
+	if err := os.MkdirAll(sessDir, 0755); err != nil {
+		return err
+	}
+	log.Printf("sessions folder: %s", sessDir)
 
 	store := &Store{file: filepath.Join(dataDir, "sessions.json")}
 	if err := store.load(); err != nil {
 		return err
+	}
+	if added := discoverSessions(sessDir, store); added > 0 {
+		log.Printf("auto-discovered %d session file(s) in %s", added, sessDir)
 	}
 
 	// Write the embedded SKILL.md to disk so `claude` can read it by path
@@ -610,7 +616,7 @@ func runServer(ln net.Listener, rootAbs string) error {
 	if err := w.Add(sessDir); err != nil {
 		return err
 	}
-	go watchLoop(w, store, h, prev)
+	go watchLoop(w, store, h, prev, sessDir)
 
 	mux := http.NewServeMux()
 	registerTerminalRoutes(mux, store, termManager)
@@ -627,6 +633,45 @@ func runServer(ln net.Listener, rootAbs string) error {
 		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 		w.Write(faviconBytes(sub))
 	})
+	// /api/files/<rel> serves files (typically images embedded via Obsidian's
+	// `![[file.png]]`) from the configured sessions folder. Hidden segments
+	// and traversal outside sessDir are rejected.
+	sessDirClean := filepath.Clean(sessDir)
+	mux.HandleFunc("/api/files/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			http.Error(w, "method", 405)
+			return
+		}
+		rel := strings.TrimPrefix(r.URL.Path, "/api/files/")
+		if rel == "" {
+			http.NotFound(w, r)
+			return
+		}
+		decoded, err := url.PathUnescape(rel)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		decoded = filepath.FromSlash(decoded)
+		for _, seg := range strings.Split(decoded, string(filepath.Separator)) {
+			if seg == "" || seg == "." || seg == ".." || strings.HasPrefix(seg, ".") {
+				http.NotFound(w, r)
+				return
+			}
+		}
+		full := filepath.Clean(filepath.Join(sessDirClean, decoded))
+		if full != sessDirClean && !strings.HasPrefix(full, sessDirClean+string(filepath.Separator)) {
+			http.NotFound(w, r)
+			return
+		}
+		info, err := os.Stat(full)
+		if err != nil || info.IsDir() {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeFile(w, r, full)
+	})
+
 	mux.HandleFunc("/download/status-orchestrator.skill", func(w http.ResponseWriter, r *http.Request) {
 		data, err := fs.ReadFile(sub, "status-orchestrator.skill")
 		if err != nil {
@@ -833,7 +878,16 @@ _(append-only, newest first)_
 
 _(free-form scratchpad — decisions, links, constraints)_
 `, yamlQuote(title), time.Now().Format(time.RFC3339))
+			// Register the session BEFORE touching the filesystem so the
+			// fsnotify Create event sees it via byPath() and the auto-
+			// discovery branch in watchLoop doesn't add a duplicate.
+			sess := Session{ID: id, Title: title, Path: path, Created: time.Now()}
+			if err := store.add(sess); err != nil {
+				http.Error(w, err.Error(), 500)
+				return
+			}
 			if err := os.WriteFile(path, []byte(initial), 0644); err != nil {
+				_, _ = store.remove(id)
 				http.Error(w, err.Error(), 500)
 				return
 			}
@@ -843,11 +897,6 @@ _(free-form scratchpad — decisions, links, constraints)_
 					http.Error(w, err.Error(), 500)
 					return
 				}
-			}
-			sess := Session{ID: id, Title: title, Path: path, Created: time.Now()}
-			if err := store.add(sess); err != nil {
-				http.Error(w, err.Error(), 500)
-				return
 			}
 			writeJSON(w, sessionWithUpdated(sess))
 		default:
@@ -1075,7 +1124,7 @@ _(free-form scratchpad — decisions, links, constraints)_
 	return http.Serve(ln, mux)
 }
 
-func watchLoop(w *fsnotify.Watcher, store *Store, h *hub, prev *prevCache) {
+func watchLoop(w *fsnotify.Watcher, store *Store, h *hub, prev *prevCache, sessDir string) {
 	debounce := map[string]*time.Timer{}
 	var dmu sync.Mutex
 	for {
@@ -1087,6 +1136,9 @@ func watchLoop(w *fsnotify.Watcher, store *Store, h *hub, prev *prevCache) {
 			if ev.Op&(fsnotify.Write|fsnotify.Create) == 0 {
 				continue
 			}
+			if !isTrackedSessionFile(ev.Name) {
+				continue
+			}
 			p := ev.Name
 			dmu.Lock()
 			if t := debounce[p]; t != nil {
@@ -1095,7 +1147,15 @@ func watchLoop(w *fsnotify.Watcher, store *Store, h *hub, prev *prevCache) {
 			debounce[p] = time.AfterFunc(80*time.Millisecond, func() {
 				sess, ok := store.byPath(p)
 				if !ok {
-					return
+					// New file dropped into the sessions folder by an
+					// external editor (Obsidian etc.) — pull it into the
+					// store so the rest of the pipeline can publish it.
+					ns, err := registerDiscoveredFile(p, store)
+					if err != nil {
+						log.Printf("auto-discover %s: %v", p, err)
+						return
+					}
+					sess = ns
 				}
 				if payload := buildUpdate(p, sess.ID, prev); payload != "" {
 					h.publish(sess.ID, payload)
@@ -1110,6 +1170,73 @@ func watchLoop(w *fsnotify.Watcher, store *Store, h *hub, prev *prevCache) {
 			log.Println("watcher:", err)
 		}
 	}
+}
+
+// isTrackedSessionFile returns true when the path's basename is a non-hidden
+// `.md` file. Hidden files/folders (anything starting with `.`) and non-md
+// files are ignored so vault config dirs like `.obsidian/` and arbitrary
+// attachments don't trigger session updates.
+func isTrackedSessionFile(p string) bool {
+	base := filepath.Base(p)
+	if base == "" || strings.HasPrefix(base, ".") {
+		return false
+	}
+	return strings.EqualFold(filepath.Ext(base), ".md")
+}
+
+// discoverSessions scans sessDir for non-hidden `.md` files that are not yet
+// in the store and registers each as a session. Returns the count added.
+// Run on startup so users who point at an existing Obsidian folder see all
+// notes appear in the sidebar without manual import.
+func discoverSessions(sessDir string, store *Store) int {
+	entries, err := os.ReadDir(sessDir)
+	if err != nil {
+		return 0
+	}
+	added := 0
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if !isTrackedSessionFile(e.Name()) {
+			continue
+		}
+		full := filepath.Join(sessDir, e.Name())
+		if _, ok := store.byPath(full); ok {
+			continue
+		}
+		if _, err := registerDiscoveredFile(full, store); err != nil {
+			log.Printf("auto-discover %s: %v", full, err)
+			continue
+		}
+		added++
+	}
+	return added
+}
+
+// registerDiscoveredFile creates a Session for an existing markdown file and
+// adds it to the store. Created-time tracks the file's mtime so the sidebar
+// orders newly imported notes alongside dashboard-created ones sensibly.
+func registerDiscoveredFile(path string, store *Store) (Session, error) {
+	if _, ok := store.byPath(path); ok {
+		s, _ := store.byPath(path)
+		return s, nil
+	}
+	stem := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	title := fileTitle(path)
+	if title == "" {
+		title = stem
+	}
+	created := fileModTime(path)
+	if created.IsZero() {
+		created = time.Now()
+	}
+	id := fmt.Sprintf("%d-%s", created.Unix(), slug(stem))
+	sess := Session{ID: id, Title: title, Path: path, Created: created}
+	if err := store.add(sess); err != nil {
+		return Session{}, err
+	}
+	return sess, nil
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
