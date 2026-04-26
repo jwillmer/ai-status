@@ -785,6 +785,153 @@ async function loadConfig() {
 }
 
 /* ---------------------------------------------------------------------------
+ * Update check — on page load, ask the server whether origin/main has moved
+ * past the running binary's commit. If it has, show a banner with either an
+ * Update-now button (when preconditions allow self-update) or a GitHub link
+ * (when they don't). Dismissals are remembered per-commit in localStorage so
+ * one click silences the banner until the next upstream change.
+ * ------------------------------------------------------------------------- */
+const updateBanner = $("#update-banner");
+const updateText = updateBanner ? updateBanner.querySelector(".update-text") : null;
+const updateInstallBtn = $("#update-install");
+const updateLink = $("#update-link");
+const updateDismissBtn = $("#update-dismiss");
+let dismissTarget = "";
+let updateEvtSource = null;
+
+function setBannerText(builder) {
+  while (updateText.firstChild) updateText.removeChild(updateText.firstChild);
+  builder({
+    plain: (s) => updateText.appendChild(document.createTextNode(s)),
+    strong: (s) => {
+      const el = document.createElement("strong");
+      el.textContent = s;
+      updateText.appendChild(el);
+    },
+    code: (s) => {
+      const el = document.createElement("code");
+      el.textContent = s;
+      updateText.appendChild(el);
+    },
+    muted: (s) => {
+      const el = document.createElement("span");
+      el.style.opacity = ".75";
+      el.textContent = s;
+      updateText.appendChild(el);
+    },
+  });
+}
+
+function renderUpdateBanner(info) {
+  if (!updateBanner || !updateText) return;
+  if (!info || !info.updateAvailable) { updateBanner.hidden = true; return; }
+  let dismissed = false;
+  try { dismissed = localStorage.getItem("update-dismissed") === info.latest; } catch {}
+  if (dismissed) { updateBanner.hidden = true; return; }
+
+  dismissTarget = info.latest;
+  const behind = info.behind > 0
+    ? `${info.behind} commit${info.behind === 1 ? "" : "s"} behind`
+    : "update available";
+
+  setBannerText(({ strong, plain, code, muted }) => {
+    strong("New version");
+    plain(` · ${behind} (latest `);
+    code((info.latest || "").slice(0, 7));
+    plain(")");
+    if (info.latestMessage) plain(` — ${info.latestMessage}`);
+    if (!info.canSelfUpdate && info.reason) {
+      plain(" ");
+      muted(`(${info.reason})`);
+    }
+  });
+
+  updateInstallBtn.hidden = !info.canSelfUpdate;
+  updateInstallBtn.disabled = false;
+  updateInstallBtn.textContent = "Update now";
+  if (updateLink) {
+    updateLink.href = info.compareURL || info.repoURL || "#";
+    updateLink.hidden = false;
+  }
+  updateBanner.classList.remove("is-error");
+  updateBanner.hidden = false;
+}
+
+function showUpdateProgress(phase, detail) {
+  if (!updateBanner || !updateText) return;
+  updateBanner.hidden = false;
+  updateBanner.classList.remove("is-error");
+  if (updateInstallBtn) {
+    updateInstallBtn.disabled = true;
+    updateInstallBtn.textContent = phase + "…";
+  }
+  setBannerText(({ strong, plain, muted }) => {
+    strong("Updating");
+    plain(` · ${phase}`);
+    if (detail) { plain(" "); muted(detail); }
+  });
+}
+
+function showUpdateError(phase, error) {
+  if (!updateBanner || !updateText) return;
+  updateBanner.hidden = false;
+  updateBanner.classList.add("is-error");
+  if (updateInstallBtn) updateInstallBtn.hidden = true;
+  setBannerText(({ strong, plain }) => {
+    strong("Update failed");
+    plain(` · ${phase}: ${error}`);
+  });
+}
+
+async function checkForUpdate() {
+  if (!updateBanner) return;
+  // Silent on failure — conn-banner already covers "server unreachable".
+  try { renderUpdateBanner(await api(`/api/version`)); } catch {}
+}
+
+function closeUpdateStream() {
+  if (!updateEvtSource) return;
+  updateEvtSource.close();
+  updateEvtSource = null;
+}
+
+function startUpdateStream() {
+  if (updateEvtSource) return;
+  try {
+    updateEvtSource = new EventSource("/api/update/events");
+  } catch { return; }
+  updateEvtSource.onmessage = (e) => {
+    let p; try { p = JSON.parse(e.data); } catch { return; }
+    if (p.error) { showUpdateError(p.phase || "update", p.error); closeUpdateStream(); return; }
+    if (p.phase) showUpdateProgress(p.phase, p.detail || "");
+    // On a clean restart the SSE drops; conn-banner's reload-on-reconnect
+    // takes the page from here.
+    if (p.done) closeUpdateStream();
+  };
+  updateEvtSource.onerror = closeUpdateStream;
+}
+
+async function startSelfUpdate() {
+  if (!updateInstallBtn) return;
+  updateInstallBtn.disabled = true;
+  updateInstallBtn.textContent = "Starting…";
+  startUpdateStream();
+  try {
+    await api("/api/update", { method: "POST" });
+  } catch (e) {
+    showUpdateError("request", e && e.message ? e.message : String(e));
+  }
+}
+
+if (updateInstallBtn) updateInstallBtn.onclick = startSelfUpdate;
+if (updateDismissBtn) updateDismissBtn.onclick = () => {
+  if (dismissTarget) {
+    try { localStorage.setItem("update-dismissed", dismissTarget); } catch {}
+  }
+  if (updateBanner) updateBanner.hidden = true;
+};
+
+/* ---------------------------------------------------------------------------
  * Theme switcher — cycles system → light → dark → system. Persisted as the
  * `theme` cookie (1 year). The initial paint is already applied by the inline
  * script in index.html <head>; this only wires the toggle button.
@@ -849,6 +996,7 @@ document.addEventListener("keydown", (e) => {
 });
 
 loadConfig();
+checkForUpdate();
 loadSessions();
 // Initial collapse state — before any session is opened, collapse cmd column.
 document.body.classList.add("cmd-collapsed");

@@ -48,8 +48,9 @@
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 
+#banners { grid-area: banner; display: flex; flex-direction: column; }
+
 #conn-banner {
-  grid-area: banner;
   display: flex; align-items: center; justify-content: center; gap: 10px;
   padding: 8px 14px; font-size: 13px; font-weight: 500;
   background: #3a1a1a; color: #ffb4b4;
@@ -67,6 +68,36 @@ html, body { height: 100%; margin: 0; }
   70%  { box-shadow: 0 0 0 8px rgba(255,107,107,0); }
   100% { box-shadow: 0 0 0 0 rgba(255,107,107,0); }
 }
+
+#update-banner {
+  display: flex; align-items: center; justify-content: center; gap: 14px;
+  padding: 8px 14px; font-size: 13px; font-weight: 500;
+  background: #1a2a3a; color: #b9d4ff;
+  border-bottom: 1px solid #3b82f6;
+  flex-wrap: wrap;
+}
+#update-banner[hidden] { display: none; }
+#update-banner .update-text { display: inline-flex; align-items: center; gap: 8px; }
+#update-banner .update-text strong { color: #fff; font-weight: 600; }
+#update-banner .update-actions { display: inline-flex; align-items: center; gap: 8px; }
+#update-banner .update-install {
+  background: #3b82f6; color: #fff; border: 0;
+  padding: 4px 12px; border-radius: 6px; font: inherit; font-weight: 600;
+  cursor: pointer;
+}
+#update-banner .update-install:hover { background: #60a5fa; }
+#update-banner .update-install:disabled { opacity: .65; cursor: progress; }
+#update-banner .update-link {
+  color: #b9d4ff; text-decoration: underline; font-weight: 500;
+}
+#update-banner .update-link:hover { color: #fff; }
+#update-banner .update-dismiss {
+  background: transparent; color: #b9d4ff; border: 0;
+  font-size: 18px; line-height: 1; cursor: pointer; padding: 0 4px;
+}
+#update-banner .update-dismiss:hover { color: #fff; }
+#update-banner.is-error { background: #3a1a1a; color: #ffb4b4; border-bottom-color: var(--danger); }
+#update-banner.is-error .update-link { color: #ffb4b4; }
 
 body {
   font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Inter, system-ui, sans-serif;

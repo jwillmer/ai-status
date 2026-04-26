@@ -46,9 +46,13 @@ PID=$(tasklist.exe //fi "imagename eq ai-status.exe" //fo csv 2>&1 \
 [ -n "$PID" ] && taskkill.exe //PID "$PID" //F
 
 # 2. Rebuild — MUST pass `-ldflags="-H windowsgui"` so the exe runs as a
-#    Windows GUI app (no console window pops up when launched).
+#    Windows GUI app (no console window pops up when launched). Also
+#    stamp Version + CommitSHA so the in-app update check has something
+#    to compare against origin/main on GitHub.
 export PATH="/c/Program Files/Go/bin:$PATH"
-go build -ldflags="-H windowsgui" -o ai-status.exe .
+SHA=$(git rev-parse HEAD)
+VER=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+go build -ldflags="-H windowsgui -X main.Version=$VER -X main.CommitSHA=$SHA" -o ai-status.exe .
 
 # 3. Launch detached WITHOUT opening a browser tab — the user already has one.
 #    `&` is enough on this Windows+Bash setup; no need for nohup/disown.
@@ -110,7 +114,7 @@ If you add new client-side features that need fresh assets on reload, no extra w
 ## Build tooling
 
 - **Windows:** Go binary lives at `C:\Program Files\Go\bin\go.exe` (not on `$PATH` in this shell). `go build -ldflags="-H windowsgui" -o ai-status.exe .` from the repo root. Windows icon resource comes from `rsrc_windows_amd64.syso` (prebuilt, don't touch).
-- **Linux / macOS:** `go build -o ai-status .` from the repo root. Platform code is split under build tags: `pty_windows.go` / `pty_unix.go` for the PTY backend, `platform_windows.go` / `platform_unix.go` for folder picker, file-open, terminal-emulator launch, and tray-icon wrapping. Add new OS-specific code to the matching pair; keep `main.go` and `terminal.go` platform-neutral.
+- **Linux / macOS:** `go build -o ai-status .` from the repo root. Platform code is split under build tags: `pty_windows.go` / `pty_unix.go` for the PTY backend, `platform_windows.go` / `platform_unix.go` for folder picker, file-open, terminal-emulator launch, and tray-icon wrapping, `update_windows.go` / `update_unix.go` for the self-update binary swap (Windows uses rename-old + spawn-new + exit; Unix overwrites in place + `syscall.Exec`). Add new OS-specific code to the matching pair; keep `main.go`, `terminal.go`, and `update.go` platform-neutral.
 
 ## Do not use the PowerShell tool
 

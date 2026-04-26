@@ -54,9 +54,17 @@ if [ "$BUILD_ONLY" = "0" ]; then
   fi
 fi
 
-# 2) Rebuild — plain build, no Windows-only ldflags.
-echo "[build] go build -o ai-status ."
-go build -o "$BIN" .
+# 2) Rebuild — stamp Version + CommitSHA so the in-app update check can
+#    compare HEAD against origin/main on GitHub. Falls back to "dev" /
+#    empty SHA when not in a git checkout (rare).
+SHA=""; VER="dev"
+if command -v git >/dev/null 2>&1 && git rev-parse --git-dir >/dev/null 2>&1; then
+  SHA=$(git rev-parse HEAD 2>/dev/null || echo "")
+  VER=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
+fi
+LDFLAGS="-X main.Version=$VER -X main.CommitSHA=$SHA"
+echo "[build] go build (Version=$VER CommitSHA=${SHA:0:7})"
+go build -ldflags="$LDFLAGS" -o "$BIN" .
 
 if [ "$BUILD_ONLY" = "1" ] || [ "$NO_LAUNCH" = "1" ]; then
   echo "[build] done — binary at $BIN"

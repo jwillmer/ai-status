@@ -27,9 +27,19 @@
   <svg class="icon-close" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
 </button>
 <div id="menu-overlay" class="menu-overlay" aria-hidden="true"></div>
-<div id="conn-banner" role="status" aria-live="polite" hidden>
-  <span class="conn-dot" aria-hidden="true"></span>
-  <span class="conn-text">Server unreachable — no live updates. Retrying…</span>
+<div id="banners">
+  <div id="update-banner" role="status" aria-live="polite" hidden>
+    <span class="update-text"></span>
+    <div class="update-actions">
+      <button type="button" id="update-install" class="update-install" hidden>Update now</button>
+      <a id="update-link" class="update-link" href="#" target="_blank" rel="noopener" hidden>View on GitHub</a>
+      <button type="button" id="update-dismiss" class="update-dismiss" aria-label="Dismiss">×</button>
+    </div>
+  </div>
+  <div id="conn-banner" role="status" aria-live="polite" hidden>
+    <span class="conn-dot" aria-hidden="true"></span>
+    <span class="conn-text">Server unreachable — no live updates. Retrying…</span>
+  </div>
 </div>
 <aside id="sidebar">
   <div class="side-head">

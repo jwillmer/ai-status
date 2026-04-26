@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"embed"
 	"encoding/json"
 	"flag"
@@ -15,6 +16,7 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -36,6 +38,21 @@ var staticFS embed.FS
 
 //go:embed skill/status-orchestrator/SKILL.md
 var skillFile []byte
+
+// Version and CommitSHA are stamped at build time via
+// `-ldflags="-X main.Version=… -X main.CommitSHA=…"`. They power the update
+// banner: when CommitSHA differs from origin/main on GitHub, the UI shows
+// "N commits behind — Update" and offers an in-place git-pull + rebuild.
+// Empty CommitSHA disables the update check (e.g. ad-hoc `go build` without
+// the stamp).
+var (
+	Version   = "dev"
+	CommitSHA = ""
+)
+
+// repoSlug is the GitHub repo polled for the latest commit on the default
+// branch. Lowercase, no scheme, no trailing slash.
+const repoSlug = "jwillmer/ai-status"
 
 // skillPath is the absolute filesystem path where the embedded status-
 // orchestrator SKILL.md is written at startup. Fresh `claude` invocations
@@ -466,7 +483,13 @@ func main() {
 		log.SetOutput(lf)
 	}
 
-	ln, err := net.Listen("tcp", *addr)
+	// Drop any leftover binary from a prior self-update. Windows-only
+	// in practice — see cleanupStaleBinary in update_windows.go.
+	if exe, _, err := resolvedExe(); err == nil {
+		cleanupStaleBinary(exe)
+	}
+
+	ln, err := listenWithUpdateGrace(*addr)
 	if err != nil {
 		// Port busy → assume another instance is already running.
 		// Open browser tab and exit quietly.
@@ -623,6 +646,70 @@ func runServer(ln net.Listener, rootAbs string) error {
 			"os":              runtimeOS(),
 			"pathPlaceholder": pathPlaceholder(),
 		})
+	})
+
+	mux.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method", 405)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+		writeJSON(w, fetchUpdateInfo(ctx))
+	})
+
+	mux.HandleFunc("/api/update", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method", 405)
+			return
+		}
+		// Run the update in a goroutine so the request returns
+		// immediately; the UI follows progress via /api/update/events.
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			defer cancel()
+			if err := runSelfUpdate(ctx); err != nil {
+				log.Printf("self-update: %v", err)
+			}
+		}()
+		invalidateVersionCache()
+		w.WriteHeader(http.StatusAccepted)
+		writeJSON(w, map[string]any{"started": true})
+	})
+
+	mux.HandleFunc("/api/update/events", func(w http.ResponseWriter, r *http.Request) {
+		f, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "no flush", 500)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("X-Accel-Buffering", "no")
+		ch := runner.subscribe()
+		defer runner.unsubscribe(ch)
+		ctx := r.Context()
+		fmt.Fprintf(w, ": connected\n\n")
+		f.Flush()
+		ping := time.NewTicker(20 * time.Second)
+		defer ping.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ping.C:
+				fmt.Fprintf(w, ": ping\n\n")
+				f.Flush()
+			case p, ok := <-ch:
+				if !ok {
+					return
+				}
+				data, _ := json.Marshal(p)
+				fmt.Fprintf(w, "data: %s\n\n", data)
+				f.Flush()
+			}
+		}
 	})
 
 	mux.HandleFunc("/api/pick-folder", func(w http.ResponseWriter, r *http.Request) {
@@ -1021,4 +1108,34 @@ func writeJSON(w http.ResponseWriter, v any) {
 // (e.g. path-placeholder shape, button copy).
 func runtimeOS() string {
 	return runtime.GOOS
+}
+
+// listenWithUpdateGrace is net.Listen with a small retry window when
+// AI_STATUS_PORT_WAIT is set. The Windows self-update flow spawns the
+// new exe before our process has fully exited; the child waits up to
+// AI_STATUS_PORT_WAIT seconds for the port to free up rather than
+// bailing out as a duplicate-instance.
+func listenWithUpdateGrace(addr string) (net.Listener, error) {
+	wait := os.Getenv("AI_STATUS_PORT_WAIT")
+	if wait == "" {
+		return net.Listen("tcp", addr)
+	}
+	secs, _ := strconv.Atoi(wait)
+	if secs <= 0 {
+		secs = 10
+	}
+	deadline := time.Now().Add(time.Duration(secs) * time.Second)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		ln, err := net.Listen("tcp", addr)
+		if err == nil {
+			return ln, nil
+		}
+		lastErr = err
+		time.Sleep(200 * time.Millisecond)
+	}
+	if lastErr == nil {
+		lastErr = fmt.Errorf("listen %s timed out", addr)
+	}
+	return nil, lastErr
 }
