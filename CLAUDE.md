@@ -104,6 +104,7 @@ Linux/macOS key rules:
 - **Use `pkill -x ai-status`** — the `-x` is important, otherwise it matches every process whose cmdline contains the string.
 - **Redirect logs** (`>/tmp/ai-status.log 2>&1`) when launching detached. Unlike the Windows GUI build, the Linux binary writes the startup log banner to stdout.
 - **Don't rebuild without killing first.** Replacing a running binary on Linux is safe at the filesystem layer (inode survives), but the old version keeps serving requests until it exits.
+- **Mind the data root when rebuilding on Linux.** `--root .` resolves against the cwd at launch time, so where you start the binary decides where `data/sessions.json` and the default `sessions/` folder live. The dev script (`scripts/build.sh`) launches from the repo, so a user whose original instance was started elsewhere (e.g. `~`) will appear to "lose" their sessions after a rebuild — they're untouched at the *previous* root. To preserve their store, relaunch with the same cwd: `(cd <orig-root> && /home/jwi/GitHub/ai-status/ai-status --no-open >/tmp/ai-status.log 2>&1 &)`. Check `/home/jwi/data/sessions.json` first to see if a non-repo root is in use. The in-app self-update path (`update_unix.go`) preserves argv/cwd, so this only bites during dev rebuilds.
 
 ## Auto-reload in the browser
 
