@@ -26,13 +26,30 @@ The AI Status dashboard runs at `http://127.0.0.1:7879` and exposes `POST /api/s
    ```bash
    curl -sS -X POST http://127.0.0.1:7879/api/sessions \
      -H 'Content-Type: application/json' \
-     -d '{"title":"<title>","folder":"<project-folder>"}'
+     -d '{"title":"<title>","folder":"<project-folder>","file_dir":"<optional dir for the .md>"}'
    ```
-   Both fields are optional; sending `folder` lets the server pre-populate `project_folder:` for you.
+   All three fields are optional. `folder` pre-populates `project_folder:`. `file_dir` (absolute path) lands the `.md` *inside* that directory instead of the dashboard's default sessions folder — use this when the user wants the status file committed alongside a project (e.g. `file_dir` = the same path as `folder`).
 4. The JSON response includes a `path` field — that's your `$STATUS_FILE`. The server has already written the §3 skeleton (YAML front matter + section scaffold). You still need to fill in `claude_session:` per §1's discovery steps; everything else is in place.
 5. If the call fails (connection refused, non-2xx, or the host has the dashboard on a different port), the app isn't running. Tell the user in one line and ask for a path, or ask them to start the app.
 
 Reply to the user once with the path you created so they know what to open: `Created <path>. Orchestrating via that file.`
+
+### 1b. Moving an existing status file (e.g. into a tracked repo)
+
+If the user later asks to commit the status file alongside a project, ask the dashboard to relocate it — don't `mv` the file yourself. The dashboard owns the file's path in its store; an out-of-band move would orphan it.
+
+```bash
+curl -sS -X POST http://127.0.0.1:7879/api/sessions/<session-id>/move \
+  -H 'Content-Type: application/json' \
+  -d '{"dir":"<absolute destination directory>"}'
+```
+
+The `<session-id>` is the part of `$STATUS_FILE`'s basename before `.md` (e.g. `1714400000-login-refactor`). The basename is preserved; only the parent directory changes. The response is the updated session object — its `path` field is your new `$STATUS_FILE`.
+
+Caveats:
+
+- Image attachments referenced via `![[file.png]]` still resolve against the dashboard's configured sessions folder, not the new location. If the file uses inline images, leave them in the sessions folder or copy them across.
+- After a successful move, treat the new `path` as `$STATUS_FILE` for the rest of the session. Do not edit the file at the old path — it no longer exists.
 
 ### Session reference block — what to capture
 

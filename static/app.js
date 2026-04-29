@@ -13,6 +13,7 @@ const delBtn = $("#del-btn");
 const showCmdBtn = $("#show-cmd-btn");
 const openCmdBtn = $("#open-cmd-btn");
 const openFileBtn = $("#open-file-btn");
+const moveFileBtn = $("#move-file-btn");
 const metaToggleBtn = $("#meta-toggle-btn");
 const metaPanel = $("#meta-panel");
 const viewFocus = $("#view-focus");
@@ -42,7 +43,15 @@ const newTitleInput = $("#new-title");
 const newFolderInput = $("#new-folder");
 const newFolderBrowse = $("#new-folder-browse");
 const newFolderPicker = $("#new-folder-picker");
+const newFileDirInput = $("#new-file-dir");
+const newFileDirBrowse = $("#new-file-dir-browse");
 const newCancelBtn = $("#new-cancel");
+
+const moveDialog = $("#move-dialog");
+const moveForm = $("#move-form");
+const moveInput = $("#move-input");
+const moveBrowse = $("#move-browse");
+const moveCancelBtn = $("#move-cancel");
 
 const folderDialog = $("#folder-dialog");
 const folderForm = $("#folder-form");
@@ -251,6 +260,7 @@ function openNewDialog() {
   if (!newDialog) return;
   newTitleInput.value = "Session " + new Date().toLocaleString();
   newFolderInput.value = "";
+  if (newFileDirInput) newFileDirInput.value = "";
   // Select title text so user can immediately overtype
   queueMicrotask(() => {
     newTitleInput.focus();
@@ -267,6 +277,8 @@ async function submitNewSession(includeFolder) {
   if (includeFolder) {
     const folder = (newFolderInput.value || "").trim();
     if (folder) body.folder = folder;
+    const fileDir = (newFileDirInput && newFileDirInput.value || "").trim();
+    if (fileDir) body.file_dir = fileDir;
   }
   try {
     const sess = await api("/api/sessions", {
@@ -309,6 +321,16 @@ if (newFolderBrowse) {
     try {
       const folder = await pickFolderNative();
       if (folder) newFolderInput.value = folder;
+    } catch (e) {
+      alert("Browse failed: " + e.message);
+    }
+  };
+}
+if (newFileDirBrowse) {
+  newFileDirBrowse.onclick = async () => {
+    try {
+      const folder = await pickFolderNative();
+      if (folder) newFileDirInput.value = folder;
     } catch (e) {
       alert("Browse failed: " + e.message);
     }
@@ -798,7 +820,7 @@ async function loadConfig() {
   // path example instead of the Windows-shaped default in the HTML.
   if (appConfig && appConfig.pathPlaceholder) {
     document.querySelectorAll(
-      "#new-folder, #term-folder-input, #folder-input"
+      "#new-folder, #term-folder-input, #folder-input, #new-file-dir, #move-input"
     ).forEach((el) => { el.placeholder = appConfig.pathPlaceholder; });
   }
 }
@@ -1567,6 +1589,62 @@ if (openFileBtn) {
       alert("Open failed: " + e.message);
     }
   };
+}
+
+function openMoveDialog() {
+  if (!moveDialog || !currentId) return;
+  const s = sessions.find(x => x.id === currentId);
+  // Pre-fill with the current parent dir so the user can tweak instead of
+  // typing from scratch — handy when nudging a file between sibling repos.
+  moveInput.value = s && s.path ? s.path.replace(/[\\/][^\\/]+$/, "") : "";
+  if (typeof moveDialog.showModal === "function") moveDialog.showModal();
+  else moveDialog.setAttribute("open", "");
+  queueMicrotask(() => { moveInput.focus(); moveInput.select(); });
+}
+
+if (moveFileBtn) {
+  moveFileBtn.onclick = openMoveDialog;
+}
+if (moveBrowse) {
+  moveBrowse.onclick = async () => {
+    try {
+      const folder = await pickFolderNative();
+      if (folder) moveInput.value = folder;
+    } catch (e) {
+      alert("Browse failed: " + e.message);
+    }
+  };
+}
+if (moveCancelBtn) moveCancelBtn.onclick = () => moveDialog && moveDialog.close();
+if (moveDialog) {
+  moveDialog.addEventListener("click", (e) => {
+    if (e.target === moveDialog) moveDialog.close();
+  });
+}
+if (moveForm) {
+  moveForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!currentId) { moveDialog && moveDialog.close(); return; }
+    const dir = (moveInput.value || "").trim();
+    if (!dir) { moveInput.focus(); return; }
+    try {
+      const updated = await api(`/api/sessions/${currentId}/move`, {
+        method: "POST",
+        body: JSON.stringify({ dir }),
+      });
+      // Patch local state so the path under the title swaps without waiting
+      // for the next /api/sessions roundtrip.
+      const s = sessions.find(x => x.id === currentId);
+      if (s && updated && updated.path) s.path = updated.path;
+      if (currentId === (updated && updated.id) && updated.path) {
+        viewPath.textContent = updated.path;
+      }
+      moveDialog.close();
+      renderList();
+    } catch (err) {
+      alert("Move failed: " + err.message);
+    }
+  });
 }
 
 if (openCmdBtn) {

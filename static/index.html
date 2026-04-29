@@ -81,6 +81,7 @@
         <button id="show-cmd-btn" hidden>▶ Show cmd</button>
         <button id="open-cmd-btn" hidden title="Open cmd window in session folder (runs claude --resume when available)">Open cmd</button>
         <button id="open-file-btn" title="Open .md file in system default editor">Open file</button>
+        <button id="move-file-btn" title="Move the .md file to another folder (e.g. into a project repo so it can be committed)">Move…</button>
         <button id="meta-toggle-btn" aria-pressed="false" title="Show / hide YAML frontmatter">Metadata</button>
         <button id="arch-btn"></button>
         <button id="del-btn" class="danger" title="Delete">Delete</button>
@@ -122,6 +123,13 @@
       <button type="button" id="new-folder-browse" title="Browse for folder">Browse…</button>
     </div>
 
+    <label for="new-file-dir">Place .md file in (optional — defaults to sessions folder)</label>
+    <div class="folder-row">
+      <input type="text" id="new-file-dir" placeholder="C:\path\to\repo" autocomplete="off" spellcheck="false">
+      <button type="button" id="new-file-dir-browse" title="Browse for folder">Browse…</button>
+    </div>
+    <p class="hint">Pick a folder inside a git repo if you want to commit the status file alongside the project.</p>
+
     <div class="new-actions">
       <button type="button" id="new-cancel">Cancel</button>
       <button type="submit" id="new-create">Create</button>
@@ -144,6 +152,24 @@
     <div class="new-actions">
       <button type="button" id="folder-cancel">Cancel</button>
       <button type="submit" id="folder-save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="move-dialog">
+  <form id="move-form" method="dialog" class="new-body">
+    <h2>Move status file</h2>
+    <p class="hint">Pick a destination folder. The <code>.md</code> file is moved there, the dashboard keeps tracking it, and you can <code>git add</code> it from inside the repo.</p>
+
+    <label for="move-input">Destination folder</label>
+    <div class="folder-row">
+      <input type="text" id="move-input" placeholder="C:\path\to\repo" autocomplete="off" spellcheck="false" required>
+      <button type="button" id="move-browse" title="Browse for folder">Browse…</button>
+    </div>
+
+    <div class="new-actions">
+      <button type="button" id="move-cancel">Cancel</button>
+      <button type="submit" id="move-save">Move</button>
     </div>
   </form>
 </dialog>

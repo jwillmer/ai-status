@@ -613,8 +613,22 @@ func runServer(ln net.Listener, rootAbs string) error {
 	if err != nil {
 		return err
 	}
-	if err := w.Add(sessDir); err != nil {
+	dw := newDirWatcher(w)
+	// sessDir is always watched (auto-discovery target). Refcount it once
+	// up front so it never gets removed even if no session lives there.
+	if err := dw.ensure(sessDir); err != nil {
 		return err
+	}
+	// Sessions whose .md lives outside sessDir (after a move, or created
+	// directly into a project repo) need their parent dir watched too.
+	for _, s := range store.list() {
+		dir := filepath.Dir(s.Path)
+		if dir == sessDir {
+			continue
+		}
+		if err := dw.ensure(dir); err != nil {
+			log.Printf("watcher add %s: %v", dir, err)
+		}
 	}
 	go watchLoop(w, store, h, prev, sessDir)
 
@@ -830,8 +844,9 @@ func runServer(ln net.Listener, rootAbs string) error {
 			writeJSON(w, out)
 		case http.MethodPost:
 			var body struct {
-				Title  string `json:"title"`
-				Folder string `json:"folder"`
+				Title   string `json:"title"`
+				Folder  string `json:"folder"`
+				FileDir string `json:"file_dir"`
 			}
 			json.NewDecoder(r.Body).Decode(&body)
 			title := strings.TrimSpace(body.Title)
@@ -839,7 +854,24 @@ func runServer(ln net.Listener, rootAbs string) error {
 				title = "Session " + time.Now().Format("2006-01-02 15:04:05")
 			}
 			id := fmt.Sprintf("%d-%s", time.Now().Unix(), slug(title))
-			path := filepath.Join(sessDir, id+".md")
+			// file_dir lets the caller (UI or skill) drop the .md straight
+			// into a project repo so it can be committed without a later
+			// move. Empty → historical default of sessDir.
+			fileDir := strings.TrimSpace(body.FileDir)
+			if fileDir == "" {
+				fileDir = sessDir
+			} else {
+				if !filepath.IsAbs(fileDir) {
+					http.Error(w, "file_dir must be absolute", 400)
+					return
+				}
+				fileDir = filepath.Clean(fileDir)
+				if err := os.MkdirAll(fileDir, 0755); err != nil {
+					http.Error(w, "create file_dir: "+err.Error(), 500)
+					return
+				}
+			}
+			path := filepath.Join(fileDir, id+".md")
 			// Skeleton per status-orchestrator SKILL §3: YAML front matter
 			// (title, created, focus) plus the canonical section scaffold so
 			// the dashboard renders with the expected shape on first open.
@@ -898,6 +930,13 @@ _(free-form scratchpad — decisions, links, constraints)_
 					return
 				}
 			}
+			// If the file landed outside sessDir, start watching its parent
+			// so saves trigger SSE updates the same way they do in sessDir.
+			if fileDir != sessDir {
+				if err := dw.ensure(fileDir); err != nil {
+					log.Printf("watcher add %s: %v", fileDir, err)
+				}
+			}
 			writeJSON(w, sessionWithUpdated(sess))
 		default:
 			http.Error(w, "method", 405)
@@ -921,8 +960,12 @@ _(free-form scratchpad — decisions, links, constraints)_
 					http.Error(w, err.Error(), 404)
 					return
 				}
+				dir := filepath.Dir(sess.Path)
 				os.Remove(sess.Path)
 				prev.forget(id)
+				if dir != sessDir {
+					dw.release(dir)
+				}
 				w.WriteHeader(204)
 			case http.MethodPatch:
 				var body struct {
@@ -980,6 +1023,97 @@ _(free-form scratchpad — decisions, links, constraints)_
 			default:
 				http.Error(w, "method", 405)
 			}
+		case "move":
+			// Relocate the session's .md file to a new directory (typically
+			// a tracked git repo, so the file can be committed). The basename
+			// is preserved; the destination dir is created if missing. The
+			// store's Path is updated atomically with the rename, and the
+			// fsnotify watcher gains/loses dirs so live updates keep firing.
+			//
+			// Body: {"dir": "<absolute destination directory>"}
+			//
+			// Caveats: attachments embedded via `![[file.png]]` still resolve
+			// against sessDir (the configured sessions folder), so put them
+			// there if you need them rendered.
+			if r.Method != http.MethodPost {
+				http.Error(w, "method", 405)
+				return
+			}
+			var body struct {
+				Dir string `json:"dir"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, err.Error(), 400)
+				return
+			}
+			destDir := strings.TrimSpace(body.Dir)
+			if destDir == "" {
+				http.Error(w, "dir required", 400)
+				return
+			}
+			if !filepath.IsAbs(destDir) {
+				http.Error(w, "dir must be absolute", 400)
+				return
+			}
+			destDir = filepath.Clean(destDir)
+			sess, ok := store.byID(id)
+			if !ok {
+				http.Error(w, "not found", 404)
+				return
+			}
+			oldPath := sess.Path
+			oldDir := filepath.Dir(oldPath)
+			if oldDir == destDir {
+				writeJSON(w, sessionWithUpdated(sess))
+				return
+			}
+			if err := os.MkdirAll(destDir, 0755); err != nil {
+				http.Error(w, "create dest: "+err.Error(), 500)
+				return
+			}
+			newPath := filepath.Join(destDir, filepath.Base(oldPath))
+			if _, err := os.Stat(newPath); err == nil {
+				http.Error(w, "destination already exists: "+newPath, 409)
+				return
+			}
+			// os.Rename is atomic within a filesystem. Across filesystems it
+			// fails with EXDEV; fall back to copy+remove so a move into a
+			// repo on a different mount still works.
+			if err := os.Rename(oldPath, newPath); err != nil {
+				if data, rerr := os.ReadFile(oldPath); rerr == nil {
+					if werr := os.WriteFile(newPath, data, 0644); werr == nil {
+						_ = os.Remove(oldPath)
+					} else {
+						http.Error(w, "copy: "+werr.Error(), 500)
+						return
+					}
+				} else {
+					http.Error(w, "rename: "+err.Error(), 500)
+					return
+				}
+			}
+			if err := store.update(id, func(s *Session) { s.Path = newPath }); err != nil {
+				// Roll the file back so store and disk stay in sync.
+				_ = os.Rename(newPath, oldPath)
+				http.Error(w, err.Error(), 500)
+				return
+			}
+			// Watch the new dir before releasing the old one so a save
+			// during the swap is never lost. sessDir is permanent; never
+			// release it (its initial refcount keeps it pinned anyway).
+			if destDir != sessDir {
+				if err := dw.ensure(destDir); err != nil {
+					log.Printf("watcher add %s: %v", destDir, err)
+				}
+			}
+			if oldDir != sessDir {
+				dw.release(oldDir)
+			}
+			updated, _ := store.byID(id)
+			// Push a dashboard event so any open tab swaps the displayed path
+			// without needing the user to re-select the session.
+			h.publishGlobal(buildGlobalEvent(updated, newPath))
+			writeJSON(w, sessionWithUpdated(updated))
 		case "archive":
 			if r.Method != http.MethodPost {
 				http.Error(w, "method", 405)
@@ -1122,6 +1256,53 @@ _(free-form scratchpad — decisions, links, constraints)_
 
 	log.Printf("status-updates listening on %s  (root=%s)", appURL, rootAbs)
 	return http.Serve(ln, mux)
+}
+
+// dirWatcher refcounts fsnotify watches per directory so the same path can
+// be ensured by multiple sessions (or by startup + a later move) without
+// double-Adding, and so dirs are released when the last session leaves.
+// Not safe for concurrent use — callers (HTTP handlers, watchLoop) hold
+// the store mutex implicitly via short-lived ops; if we ever go truly
+// concurrent here, wrap in a Mutex.
+type dirWatcher struct {
+	mu     sync.Mutex
+	w      *fsnotify.Watcher
+	counts map[string]int
+}
+
+func newDirWatcher(w *fsnotify.Watcher) *dirWatcher {
+	return &dirWatcher{w: w, counts: map[string]int{}}
+}
+
+func (d *dirWatcher) ensure(dir string) error {
+	dir = filepath.Clean(dir)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.counts[dir] > 0 {
+		d.counts[dir]++
+		return nil
+	}
+	if err := d.w.Add(dir); err != nil {
+		return err
+	}
+	d.counts[dir] = 1
+	return nil
+}
+
+func (d *dirWatcher) release(dir string) {
+	dir = filepath.Clean(dir)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	c := d.counts[dir]
+	if c <= 0 {
+		return
+	}
+	if c > 1 {
+		d.counts[dir] = c - 1
+		return
+	}
+	delete(d.counts, dir)
+	_ = d.w.Remove(dir)
 }
 
 func watchLoop(w *fsnotify.Watcher, store *Store, h *hub, prev *prevCache, sessDir string) {
