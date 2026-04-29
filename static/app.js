@@ -731,6 +731,15 @@ function startGlobalStream() {
           setDocTitle(p.title);
         }
       }
+      // External moves (skill or another tab) change `path` without the
+      // local move handler having patched it — keep the displayed path in
+      // sync so the user doesn't need to reload to see the new location.
+      if (p.path && p.path !== s.path) {
+        s.path = p.path;
+        if (p.sessionId === currentId) {
+          viewPath.textContent = p.path;
+        }
+      }
       renderList();
     }
     if (p.sessionId === currentId && !isForeground()) {

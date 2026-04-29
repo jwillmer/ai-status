@@ -338,11 +338,15 @@ func plainSnippet(htmlSrc string, max int) string {
 }
 
 // buildGlobalEvent returns a JSON string for the cross-session notify stream.
+// `path` is included so external moves (skill or another tab) can refresh the
+// path shown in any tab that already has the session open — without needing
+// a full reload to pick up the new location.
 func buildGlobalEvent(sess Session, path string) string {
 	htmlOut, _ := renderMD(path)
 	b, _ := json.Marshal(map[string]any{
 		"sessionId": sess.ID,
 		"title":     titleFor(sess),
+		"path":      path,
 		"updated":   fileModTime(path),
 		"snippet":   plainSnippet(htmlOut, 140),
 	})
