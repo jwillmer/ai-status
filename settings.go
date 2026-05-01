@@ -14,11 +14,32 @@ import (
 // on first launch so the user has something to point at an Obsidian vault
 // (or any other markdown directory) without hand-crafting JSON.
 type Settings struct {
-	SessionsFolder string `json:"sessions_folder"`
+	SessionsFolder string     `json:"sessions_folder"`
+	Sync           syncConfig `json:"sync,omitempty"`
 
 	mu      sync.Mutex
 	file    string
 	rootAbs string
+}
+
+// syncCfg returns a snapshot of the current sync configuration. The
+// engine and HTTP handlers use this to read config without holding the
+// settings mutex past the call.
+func (s *Settings) syncCfg() syncConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Sync
+}
+
+// updateSync atomically replaces the sync configuration block and
+// persists the file. Callers pass a mutator so partial updates (e.g.
+// "save URL + key, leave email alone") compose without read-modify-write
+// races against the disk.
+func (s *Settings) updateSync(fn func(*syncConfig)) error {
+	s.mu.Lock()
+	fn(&s.Sync)
+	s.mu.Unlock()
+	return s.save()
 }
 
 func loadSettings(rootAbs, file string) *Settings {

@@ -815,6 +815,197 @@ helpDialog.addEventListener("click", (e) => {
   }
 });
 
+// Sync UI: dialog + status pill in the side foot. Talks to /api/sync/*.
+// All state lives on the server; the client just reflects status() and
+// posts user actions. The pill in the side foot is the at-a-glance
+// signal — green when signed in and synced, amber while syncing, red
+// on the last error, hidden when sync is off entirely.
+const syncBtn = $("#sync-btn");
+const syncDialog = $("#sync-dialog");
+const syncPill = $("#sync-pill");
+const syncStatusDot = $("#sync-status-dot");
+const syncStatusText = $("#sync-status-text");
+const syncStatusDetail = $("#sync-status-detail");
+const syncUrlInput = $("#sync-url");
+const syncKeyInput = $("#sync-key");
+const syncAuthUrlInput = $("#sync-auth-url");
+const syncEmailInput = $("#sync-email");
+const syncCodeInput = $("#sync-code");
+const syncSendCodeBtn = $("#sync-send-code");
+const syncVerifyBtn = $("#sync-verify");
+const syncNowBtn = $("#sync-now");
+const syncSignoutBtn = $("#sync-signout");
+const syncCancelBtn = $("#sync-cancel");
+const syncMsg = $("#sync-msg");
+
+function setSyncMsg(text, tone) {
+  if (!text) {
+    syncMsg.hidden = true;
+    syncMsg.textContent = "";
+    return;
+  }
+  syncMsg.hidden = false;
+  syncMsg.textContent = text;
+  if (tone) syncMsg.dataset.tone = tone;
+  else delete syncMsg.dataset.tone;
+}
+
+function applySyncStatus(s) {
+  if (!s) return;
+  const off = !s.enabled;
+  const ok = s.enabled && s.signedIn && !s.lastError;
+  const err = !!s.lastError;
+  let state = "off";
+  if (err) state = "error";
+  else if (ok) state = "on";
+  else if (s.enabled) state = "syncing";
+  syncPill.dataset.state = state;
+  syncPill.hidden = off;
+  syncStatusDot.dataset.state = state;
+  if (off) {
+    syncStatusText.textContent = "Off";
+    syncStatusDetail.textContent = "Set up to enable cross-device sync.";
+    syncBtn.title = "Sync (off — click to set up)";
+  } else if (err) {
+    syncStatusText.textContent = "Error";
+    syncStatusDetail.textContent = s.lastError;
+    syncBtn.title = "Sync error: " + s.lastError;
+  } else if (!s.signedIn) {
+    syncStatusText.textContent = "Sign in";
+    syncStatusDetail.textContent = "Enter your email to receive a code.";
+    syncBtn.title = "Sync — sign in";
+  } else {
+    syncStatusText.textContent = s.email ? `Signed in as ${s.email}` : "Signed in";
+    const last = s.lastSyncAt ? new Date(s.lastSyncAt) : null;
+    syncStatusDetail.textContent = last && !isNaN(last) ? `Synced ${fmtRelative(last)}` : "Not yet synced";
+    syncBtn.title = "Sync — " + syncStatusDetail.textContent;
+  }
+}
+
+async function refreshSyncStatus() {
+  try {
+    const s = await api("/api/sync/status");
+    applySyncStatus(s);
+  } catch (e) {
+    // Endpoint missing in older builds — fail quiet.
+  }
+}
+
+syncBtn.onclick = async () => {
+  setSyncMsg(null);
+  try {
+    const s = await api("/api/sync/status");
+    applySyncStatus(s);
+    syncUrlInput.value = s.supabaseUrl || "";
+    syncKeyInput.value = s.anonKey || "";
+    syncAuthUrlInput.value = s.authUrlOverride || "";
+    syncEmailInput.value = s.email || "";
+  } catch {}
+  syncDialog.showModal();
+};
+syncCancelBtn.onclick = () => syncDialog.close();
+syncDialog.addEventListener("click", (e) => {
+  const r = syncDialog.getBoundingClientRect();
+  if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) {
+    syncDialog.close();
+  }
+});
+
+async function saveSyncConfig() {
+  return api("/api/sync/config", {
+    method: "POST",
+    body: JSON.stringify({
+      supabaseUrl: syncUrlInput.value.trim(),
+      anonKey: syncKeyInput.value.trim(),
+      authUrlOverride: syncAuthUrlInput.value.trim(),
+      email: syncEmailInput.value.trim(),
+    }),
+  });
+}
+
+syncSendCodeBtn.onclick = async () => {
+  setSyncMsg(null);
+  const email = syncEmailInput.value.trim();
+  if (!email) {
+    setSyncMsg("Email is required.", "error");
+    return;
+  }
+  if (!syncUrlInput.value.trim() || !syncKeyInput.value.trim()) {
+    setSyncMsg("Project URL and anon key are required.", "error");
+    return;
+  }
+  syncSendCodeBtn.disabled = true;
+  try {
+    await saveSyncConfig();
+    await api("/api/sync/otp/start", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    });
+    setSyncMsg(`Code sent to ${email}. Check your inbox (it can take a minute).`, "ok");
+  } catch (e) {
+    setSyncMsg(e.message || String(e), "error");
+  } finally {
+    syncSendCodeBtn.disabled = false;
+  }
+};
+
+syncVerifyBtn.onclick = async () => {
+  setSyncMsg(null);
+  const email = syncEmailInput.value.trim();
+  const code = syncCodeInput.value.trim();
+  if (!email || !code) {
+    setSyncMsg("Email and code are both required.", "error");
+    return;
+  }
+  syncVerifyBtn.disabled = true;
+  try {
+    const s = await api("/api/sync/otp/verify", {
+      method: "POST",
+      body: JSON.stringify({ email, code }),
+    });
+    applySyncStatus(s);
+    setSyncMsg("Signed in. First sync running in the background.", "ok");
+    syncCodeInput.value = "";
+  } catch (e) {
+    setSyncMsg(e.message || String(e), "error");
+  } finally {
+    syncVerifyBtn.disabled = false;
+  }
+};
+
+syncNowBtn.onclick = async () => {
+  setSyncMsg(null);
+  syncNowBtn.disabled = true;
+  try {
+    const s = await api("/api/sync/now", { method: "POST" });
+    applySyncStatus(s);
+    setSyncMsg("Sync complete.", "ok");
+  } catch (e) {
+    setSyncMsg(e.message || String(e), "error");
+    refreshSyncStatus();
+  } finally {
+    syncNowBtn.disabled = false;
+  }
+};
+
+syncSignoutBtn.onclick = async () => {
+  setSyncMsg(null);
+  if (!confirm("Sign out of sync? Local files stay; cloud rows stay; auth tokens are cleared.")) return;
+  try {
+    await api("/api/sync/signout", { method: "POST" });
+    refreshSyncStatus();
+    setSyncMsg("Signed out.", "ok");
+  } catch (e) {
+    setSyncMsg(e.message || String(e), "error");
+  }
+};
+
+// Pre-fill the dialog whenever it's about to open by reading status,
+// and tick the foot pill every 30s so the relative timestamp doesn't go
+// stale while the user has the app open.
+refreshSyncStatus();
+setInterval(refreshSyncStatus, 30000);
+
 document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") {
     e.preventDefault();

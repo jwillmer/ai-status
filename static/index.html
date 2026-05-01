@@ -63,6 +63,10 @@
   </section>
   <div class="side-foot">
     <a class="build-sha" id="build-sha" target="_blank" rel="noopener" hidden></a>
+    <button id="sync-btn" class="foot-icon-btn sync-btn" title="Sync (off — click to set up)" aria-label="Sync settings">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+      <span id="sync-pill" class="sync-pill" hidden></span>
+    </button>
     <button id="theme-btn" class="foot-icon-btn" title="Theme (system / light / dark)" aria-label="Cycle theme">
       <span id="theme-icon"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2" ry="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></span>
     </button>
@@ -170,6 +174,53 @@
     <div class="new-actions">
       <button type="button" id="move-cancel">Cancel</button>
       <button type="submit" id="move-save">Move</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="sync-dialog">
+  <form id="sync-form" method="dialog" class="new-body">
+    <h2>Sync</h2>
+    <p class="hint">Optional cross-device sync of session markdown via your own Supabase project. See <a href="https://github.com/jwillmer/ai-status/blob/main/docs/sync.md" target="_blank" rel="noopener">docs/sync.md</a> for setup.</p>
+
+    <div id="sync-status-row" class="sync-status-row">
+      <span class="sync-status-dot" id="sync-status-dot" data-state="off"></span>
+      <span id="sync-status-text">Off</span>
+      <span id="sync-status-detail" class="hint sync-status-detail"></span>
+    </div>
+
+    <label for="sync-url">Supabase project URL</label>
+    <input type="url" id="sync-url" placeholder="https://abcd1234.supabase.co" autocomplete="off" spellcheck="false">
+
+    <label for="sync-key">Anon (public) API key</label>
+    <input type="text" id="sync-key" placeholder="eyJ..." autocomplete="off" spellcheck="false">
+
+    <details class="sync-advanced">
+      <summary>Advanced</summary>
+      <label for="sync-auth-url">Auth URL override (self-hosted GoTrue on different origin)</label>
+      <input type="url" id="sync-auth-url" placeholder="https://auth.example.com/" autocomplete="off" spellcheck="false">
+    </details>
+
+    <hr class="sync-sep">
+
+    <label for="sync-email">Email</label>
+    <div class="folder-row">
+      <input type="email" id="sync-email" placeholder="you@example.com" autocomplete="email" spellcheck="false">
+      <button type="button" id="sync-send-code">Send code</button>
+    </div>
+
+    <label for="sync-code">6-digit code from email</label>
+    <div class="folder-row">
+      <input type="text" id="sync-code" inputmode="numeric" pattern="[0-9]{6}" placeholder="123456" autocomplete="one-time-code" maxlength="6">
+      <button type="button" id="sync-verify">Verify</button>
+    </div>
+
+    <p id="sync-msg" class="sync-msg" hidden></p>
+
+    <div class="new-actions">
+      <button type="button" id="sync-now">Sync now</button>
+      <button type="button" id="sync-signout" class="danger">Sign out</button>
+      <button type="button" id="sync-cancel">Close</button>
     </div>
   </form>
 </dialog>

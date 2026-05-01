@@ -54,6 +54,10 @@ Below 768px the sidebar collapses to an off-canvas drawer — tap the hamburger 
 
 Sessions store their metadata (`title`, `project_folder`, `claude_session`, `created`, `focus`) as YAML front matter at the top of the `.md` file. It renders invisibly in the dashboard (via `goldmark-meta`) but stays machine-readable. The header shows `focus` as a sub-title; the **Metadata** button toggles a panel with all fields.
 
+### Optional cross-device sync (Supabase)
+
+Bring your sessions with you between machines: the markdown files plus titles, pin/archive state, and tombstones can sync through your own Supabase project (free tier covers it). Off by default; set up via Settings → Sync (the cloud-arrows button in the sidebar foot). Last-write-wins on whole files — designed assuming you only edit one place at a time. Claude transcripts are *not* synced; the markdown plan is the handoff, and resuming on another device starts a fresh Claude session that reads it. See [docs/sync.md](docs/sync.md) for the 5-minute setup; self-hosted Supabase works with the same flow.
+
 ### Other conveniences
 
 - **Native folder picker** — Windows uses the real `FolderBrowserDialog`; Linux uses `zenity` / `kdialog` / `yad` (first one found); macOS uses an AppleScript `choose folder` prompt. Beats the sandboxed `webkitdirectory` which only exposes the folder name.

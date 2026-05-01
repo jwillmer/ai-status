@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -20,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -79,12 +82,28 @@ type Session struct {
 	Created  time.Time `json:"created"`
 	Archived bool      `json:"archived"`
 	Pinned   bool      `json:"pinned"`
+	// Sync-related fields. RelPath is the path relative to the configured
+	// sessions root; empty if the file lives outside it (project-local
+	// session) — those rows are skipped by the sync engine. BodyHash is
+	// sha256-hex of the last seen file body. UpdatedAt is bumped on any
+	// metadata or body change. DeletedAt is a tombstone — non-nil rows are
+	// hidden from list/byPath/byID and reaped after `tombstoneTTL`.
+	RelPath   string     `json:"relPath,omitempty"`
+	BodyHash  string     `json:"bodyHash,omitempty"`
+	UpdatedAt time.Time  `json:"updatedAt,omitempty"`
+	DeletedAt *time.Time `json:"deletedAt,omitempty"`
 }
+
+// tombstoneTTL is how long a soft-deleted session lingers in the store
+// before it's permanently reaped. Long enough that an offline device
+// coming back online can still observe and apply the deletion.
+const tombstoneTTL = 30 * 24 * time.Hour
 
 type Store struct {
 	mu       sync.Mutex
 	Sessions []Session `json:"sessions"`
 	file     string
+	sessRoot string // configured sessions folder, used to derive RelPath
 }
 
 func (s *Store) load() error {
@@ -95,10 +114,60 @@ func (s *Store) load() error {
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(data, s)
+	if err := json.Unmarshal(data, s); err != nil {
+		return err
+	}
+	return s.migrateLocked()
+}
+
+// migrateLocked backfills RelPath / BodyHash / UpdatedAt for any session
+// missing them, and reaps tombstones older than tombstoneTTL. Idempotent
+// on subsequent loads.
+func (s *Store) migrateLocked() error {
+	dirty := false
+	now := time.Now()
+	kept := s.Sessions[:0]
+	for i := range s.Sessions {
+		sess := s.Sessions[i]
+		if sess.DeletedAt != nil && now.Sub(*sess.DeletedAt) > tombstoneTTL {
+			dirty = true
+			continue
+		}
+		if sess.RelPath == "" {
+			if rp := relPathFor(sess.Path, s.sessRoot); rp != "" {
+				sess.RelPath = rp
+				dirty = true
+			}
+		}
+		if sess.UpdatedAt.IsZero() {
+			sess.UpdatedAt = fileModTime(sess.Path)
+			if sess.UpdatedAt.IsZero() {
+				sess.UpdatedAt = sess.Created
+			}
+			dirty = true
+		}
+		if sess.BodyHash == "" && sess.DeletedAt == nil {
+			if h, ok := hashFile(sess.Path); ok {
+				sess.BodyHash = h
+				dirty = true
+			}
+		}
+		kept = append(kept, sess)
+	}
+	s.Sessions = kept
+	if dirty {
+		return s.saveLocked()
+	}
+	return nil
 }
 
 func (s *Store) save() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveLocked()
+}
+
+func (s *Store) saveLocked() error {
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
@@ -113,42 +182,110 @@ func (s *Store) save() error {
 func (s *Store) add(sess Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if sess.RelPath == "" {
+		sess.RelPath = relPathFor(sess.Path, s.sessRoot)
+	}
+	if sess.UpdatedAt.IsZero() {
+		sess.UpdatedAt = time.Now()
+	}
+	if sess.BodyHash == "" {
+		if h, ok := hashFile(sess.Path); ok {
+			sess.BodyHash = h
+		}
+	}
 	s.Sessions = append(s.Sessions, sess)
-	return s.save()
+	return s.saveLocked()
 }
 
 func (s *Store) update(id string, fn func(*Session)) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.Sessions {
-		if s.Sessions[i].ID == id {
+		if s.Sessions[i].ID == id && s.Sessions[i].DeletedAt == nil {
 			fn(&s.Sessions[i])
-			return s.save()
+			s.Sessions[i].UpdatedAt = time.Now()
+			return s.saveLocked()
 		}
 	}
 	return fmt.Errorf("not found: %s", id)
 }
 
+// updateNoTouch mutates a session without bumping UpdatedAt — used by the
+// sync engine when applying remote rows so we don't shadow the remote
+// timestamp with a local "now" that would then race back as a push.
+func (s *Store) updateNoTouch(id string, fn func(*Session)) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.Sessions {
+		if s.Sessions[i].ID == id {
+			fn(&s.Sessions[i])
+			return s.saveLocked()
+		}
+	}
+	return fmt.Errorf("not found: %s", id)
+}
+
+// remove is a soft delete: marks the row as a tombstone and bumps
+// UpdatedAt. The on-disk file is removed by the caller (it predates the
+// store and may live outside sessRoot). Tombstones are hidden from
+// list/byPath/byID and reaped after tombstoneTTL on next load.
 func (s *Store) remove(id string) (Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i, sess := range s.Sessions {
-		if sess.ID == id {
-			s.Sessions = append(s.Sessions[:i], s.Sessions[i+1:]...)
-			return sess, s.save()
+	for i := range s.Sessions {
+		if s.Sessions[i].ID == id && s.Sessions[i].DeletedAt == nil {
+			now := time.Now()
+			s.Sessions[i].DeletedAt = &now
+			s.Sessions[i].UpdatedAt = now
+			out := s.Sessions[i]
+			return out, s.saveLocked()
 		}
 	}
 	return Session{}, fmt.Errorf("not found: %s", id)
 }
 
+// resurrect undoes a soft delete and is used when a file reappears at the
+// same RelPath as an existing tombstone. Cheaper than minting a new ID
+// and prevents drift between devices that may still be holding the row.
+func (s *Store) resurrect(id string, path, body string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.Sessions {
+		if s.Sessions[i].ID == id {
+			s.Sessions[i].DeletedAt = nil
+			s.Sessions[i].Path = path
+			s.Sessions[i].RelPath = relPathFor(path, s.sessRoot)
+			s.Sessions[i].BodyHash = hashBytes([]byte(body))
+			s.Sessions[i].UpdatedAt = time.Now()
+			return s.saveLocked()
+		}
+	}
+	return fmt.Errorf("not found: %s", id)
+}
+
 func (s *Store) list() []Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Session, 0, len(s.Sessions))
+	for _, sess := range s.Sessions {
+		if sess.DeletedAt != nil {
+			continue
+		}
+		out = append(out, sess)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].Created.After(out[j].Created)
+	})
+	return out
+}
+
+// listAll returns every session including tombstones — used by the sync
+// engine to push deletes upstream.
+func (s *Store) listAll() []Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]Session, len(s.Sessions))
 	copy(out, s.Sessions)
-	sort.Slice(out, func(i, j int) bool {
-		return out[i].Created.After(out[j].Created)
-	})
 	return out
 }
 
@@ -156,6 +293,9 @@ func (s *Store) byPath(p string) (Session, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, sess := range s.Sessions {
+		if sess.DeletedAt != nil {
+			continue
+		}
 		if strings.EqualFold(sess.Path, p) {
 			return sess, true
 		}
@@ -163,15 +303,55 @@ func (s *Store) byPath(p string) (Session, bool) {
 	return Session{}, false
 }
 
+// tombstoneByRelPath returns the most recent tombstoned session whose
+// RelPath matches (case-insensitive). Used to resurrect an entry when a
+// file reappears at the same relative path.
+func (s *Store) tombstoneByRelPath(rel string) (Session, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if rel == "" {
+		return Session{}, false
+	}
+	var best Session
+	found := false
+	for _, sess := range s.Sessions {
+		if sess.DeletedAt == nil {
+			continue
+		}
+		if !strings.EqualFold(sess.RelPath, rel) {
+			continue
+		}
+		if !found || sess.UpdatedAt.After(best.UpdatedAt) {
+			best = sess
+			found = true
+		}
+	}
+	return best, found
+}
+
 func (s *Store) byID(id string) (Session, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, sess := range s.Sessions {
-		if sess.ID == id {
+		if sess.ID == id && sess.DeletedAt == nil {
 			return sess, true
 		}
 	}
 	return Session{}, false
+}
+
+// relPathFor returns the slash-separated path of `abs` relative to
+// `sessRoot`, or "" if abs lives outside sessRoot. Sync skips empty
+// RelPath rows so project-local sessions stay device-local.
+func relPathFor(abs, sessRoot string) string {
+	if abs == "" || sessRoot == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(sessRoot, abs)
+	if err != nil || rel == "" || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return filepath.ToSlash(rel)
 }
 
 // pub/sub: per-session (full payload) + global (cross-session notify stream)
@@ -293,6 +473,25 @@ func fileModTime(path string) time.Time {
 		return info.ModTime()
 	}
 	return time.Time{}
+}
+
+// hashBytes returns the lowercase hex sha256 digest of b. Used as the
+// canonical change signal for a session body — cheap, deterministic, and
+// unaffected by mtime drift across filesystems and clones.
+func hashBytes(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// hashFile reads `path` and returns its sha256 hex digest plus a success
+// flag. Missing or unreadable files return ("", false) — callers leave
+// the existing hash untouched in that case.
+func hashFile(path string) (string, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	return hashBytes(data), true
 }
 
 // buildUpdate returns a JSON string with rendered HTML + file mtime. When
@@ -581,7 +780,7 @@ func runServer(ln net.Listener, rootAbs string) error {
 	}
 	log.Printf("sessions folder: %s", sessDir)
 
-	store := &Store{file: filepath.Join(dataDir, "sessions.json")}
+	store := &Store{file: filepath.Join(dataDir, "sessions.json"), sessRoot: sessDir}
 	if err := store.load(); err != nil {
 		return err
 	}
@@ -623,6 +822,71 @@ func runServer(ln net.Listener, rootAbs string) error {
 	if err := dw.ensure(sessDir); err != nil {
 		return err
 	}
+	// Walk sessDir and watch every subdirectory too — sync may
+	// materialise files into nested paths (`archive/2026/plan.md`),
+	// and without a watch on the parent dir, fsnotify won't see the
+	// user's later edits.
+	watchSubdirs(sessDir, dw)
+
+	syncStateStore := loadSyncState(filepath.Join(dataDir, "sync-state.json"))
+	ensureWatch := func(dir string) {
+		if dir == "" || dir == sessDir {
+			return
+		}
+		if err := dw.ensure(dir); err != nil {
+			log.Printf("watcher add %s: %v", dir, err)
+		}
+	}
+	// atomic.Pointer wrappers because /api/sync/config rebuilds both on
+	// settings change while the debounced-push goroutine and other
+	// handlers may be reading them concurrently. Plain var rebind would
+	// be a data race under -race.
+	var syncClientHolder atomic.Pointer[SyncClient]
+	var syncEngineHolder atomic.Pointer[SyncEngine]
+	syncClientHolder.Store(newSyncClient(settings.syncCfg(), filepath.Join(dataDir, "sync-auth.json")))
+	syncEngineHolder.Store(newSyncEngine(syncClientHolder.Load(), store, syncStateStore, syncSuppressor, sessDir, h, ensureWatch))
+
+	// First sync at startup, in the background so a slow Supabase round
+	// trip never delays the listener. Disabled config skips the call.
+	go func() {
+		if !settings.syncCfg().Enabled || !syncClientHolder.Load().signedIn() {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		if err := syncEngineHolder.Load().runSync(ctx); err != nil {
+			log.Printf("startup sync: %v", err)
+		}
+	}()
+
+	// Push debounced local edits up to the cloud. Subscribed to the
+	// global hub so every fsnotify-driven session update triggers a
+	// (debounced) push without rewiring watchLoop. Sync-originated
+	// writes are suppressed inside the watcher, so the loop is
+	// already broken upstream.
+	go func() {
+		ch := h.subscribeGlobal()
+		var debounce *time.Timer
+		var dmu sync.Mutex
+		trigger := func() {
+			if !settings.syncCfg().Enabled || !syncClientHolder.Load().signedIn() {
+				return
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			if err := syncEngineHolder.Load().runSync(ctx); err != nil {
+				log.Printf("sync push: %v", err)
+			}
+		}
+		for range ch {
+			dmu.Lock()
+			if debounce != nil {
+				debounce.Stop()
+			}
+			debounce = time.AfterFunc(1500*time.Millisecond, trigger)
+			dmu.Unlock()
+		}
+	}()
 	// Sessions whose .md lives outside sessDir (after a move, or created
 	// directly into a project repo) need their parent dir watched too.
 	for _, s := range store.list() {
@@ -722,6 +986,162 @@ func runServer(ln net.Listener, rootAbs string) error {
 			"os":              runtimeOS(),
 			"pathPlaceholder": pathPlaceholder(),
 		})
+	})
+
+	mux.HandleFunc("/api/sync/status", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method", 405)
+			return
+		}
+		writeJSON(w, syncEngineHolder.Load().status(settings.syncCfg()))
+	})
+
+	mux.HandleFunc("/api/sync/config", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method", 405)
+			return
+		}
+		var body struct {
+			Enabled         *bool   `json:"enabled,omitempty"`
+			SupabaseURL     *string `json:"supabaseUrl,omitempty"`
+			AnonKey         *string `json:"anonKey,omitempty"`
+			AuthURLOverride *string `json:"authUrlOverride,omitempty"`
+			Email           *string `json:"email,omitempty"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		err := settings.updateSync(func(c *syncConfig) {
+			if body.Enabled != nil {
+				c.Enabled = *body.Enabled
+			}
+			if body.SupabaseURL != nil {
+				c.SupabaseURL = strings.TrimSpace(*body.SupabaseURL)
+			}
+			if body.AnonKey != nil {
+				c.AnonKey = strings.TrimSpace(*body.AnonKey)
+			}
+			if body.AuthURLOverride != nil {
+				c.AuthURLOverride = strings.TrimSpace(*body.AuthURLOverride)
+			}
+			if body.Email != nil {
+				c.Email = strings.TrimSpace(*body.Email)
+			}
+		})
+		if err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		// Rebuild the client + engine with the new config and atomically
+		// publish them so concurrent /api/sync/* handlers and the push
+		// goroutine see a consistent pair. Tokens are reloaded from disk
+		// by the constructor, so a sign-in survives a settings save.
+		newClient := newSyncClient(settings.syncCfg(), filepath.Join(dataDir, "sync-auth.json"))
+		newEngine := newSyncEngine(newClient, store, syncStateStore, syncSuppressor, sessDir, h, ensureWatch)
+		syncClientHolder.Store(newClient)
+		syncEngineHolder.Store(newEngine)
+		writeJSON(w, newEngine.status(settings.syncCfg()))
+	})
+
+	mux.HandleFunc("/api/sync/otp/start", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method", 405)
+			return
+		}
+		var body struct {
+			Email string `json:"email"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		email := strings.TrimSpace(body.Email)
+		if email == "" {
+			http.Error(w, "email required", 400)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		if err := syncClientHolder.Load().otpStart(ctx, email); err != nil {
+			http.Error(w, err.Error(), 502)
+			return
+		}
+		_ = settings.updateSync(func(c *syncConfig) { c.Email = email })
+		w.WriteHeader(204)
+	})
+
+	mux.HandleFunc("/api/sync/otp/verify", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method", 405)
+			return
+		}
+		var body struct {
+			Email string `json:"email"`
+			Code  string `json:"code"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		email := strings.TrimSpace(body.Email)
+		code := strings.TrimSpace(body.Code)
+		if email == "" || code == "" {
+			http.Error(w, "email and code required", 400)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+		client := syncClientHolder.Load()
+		if err := client.otpVerify(ctx, email, code); err != nil {
+			http.Error(w, err.Error(), 502)
+			return
+		}
+		// Validate RLS up front so a misconfigured project is caught
+		// before any data round-trips. Failure leaves the sign-in
+		// intact (so the user can re-run schema.sql and retry) but
+		// surfaces a loud error.
+		if err := client.rlsProbe(ctx); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		_ = settings.updateSync(func(c *syncConfig) { c.Enabled = true })
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			defer cancel()
+			if err := syncEngineHolder.Load().runSync(ctx); err != nil {
+				log.Printf("first sync: %v", err)
+			}
+		}()
+		writeJSON(w, syncEngineHolder.Load().status(settings.syncCfg()))
+	})
+
+	mux.HandleFunc("/api/sync/now", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method", 405)
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+		eng := syncEngineHolder.Load()
+		if err := eng.runSync(ctx); err != nil {
+			http.Error(w, err.Error(), 502)
+			return
+		}
+		writeJSON(w, eng.status(settings.syncCfg()))
+	})
+
+	mux.HandleFunc("/api/sync/signout", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method", 405)
+			return
+		}
+		if err := syncClientHolder.Load().clearTokens(); err != nil {
+			http.Error(w, err.Error(), 500)
+			return
+		}
+		_ = settings.updateSync(func(c *syncConfig) { c.Enabled = false })
+		w.WriteHeader(204)
 	})
 
 	mux.HandleFunc("/api/version", func(w http.ResponseWriter, r *http.Request) {
@@ -1080,6 +1500,10 @@ _(free-form scratchpad — decisions, links, constraints)_
 				http.Error(w, "destination already exists: "+newPath, 409)
 				return
 			}
+			// Mute the fsnotify Remove that os.Rename will emit for oldPath
+			// — we're moving the file deliberately, not deleting the
+			// session, so the watchLoop must not tombstone it.
+			syncSuppressor.suppressRemove(oldPath)
 			// os.Rename is atomic within a filesystem. Across filesystems it
 			// fails with EXDEV; fall back to copy+remove so a move into a
 			// repo on a different mount still works.
@@ -1096,7 +1520,10 @@ _(free-form scratchpad — decisions, links, constraints)_
 					return
 				}
 			}
-			if err := store.update(id, func(s *Session) { s.Path = newPath }); err != nil {
+			if err := store.update(id, func(s *Session) {
+				s.Path = newPath
+				s.RelPath = relPathFor(newPath, sessDir)
+			}); err != nil {
 				// Roll the file back so store and disk stay in sync.
 				_ = os.Rename(newPath, oldPath)
 				http.Error(w, err.Error(), 500)
@@ -1318,20 +1745,61 @@ func watchLoop(w *fsnotify.Watcher, store *Store, h *hub, prev *prevCache, sessD
 			if !ok {
 				return
 			}
-			if ev.Op&(fsnotify.Write|fsnotify.Create) == 0 {
-				continue
-			}
 			if !isTrackedSessionFile(ev.Name) {
 				continue
 			}
 			p := ev.Name
+			// Remove/Rename: turn into a tombstone so the deletion
+			// propagates to other devices. Skip if syncState says we
+			// just wrote-and-removed-then-rewrote ourselves (e.g. an
+			// atomic rewrite via .tmp + rename).
+			if ev.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+				if syncSuppressor.consumeRemove(p) {
+					continue
+				}
+				if _, err := os.Stat(p); err == nil {
+					// Path still exists (rename-over-self); ignore.
+					continue
+				}
+				if sess, ok := store.byPath(p); ok {
+					if _, err := store.remove(sess.ID); err == nil {
+						h.publishGlobal(buildGlobalEvent(sess, p))
+					}
+				}
+				continue
+			}
+			if ev.Op&(fsnotify.Write|fsnotify.Create) == 0 {
+				continue
+			}
 			dmu.Lock()
 			if t := debounce[p]; t != nil {
 				t.Stop()
 			}
 			debounce[p] = time.AfterFunc(80*time.Millisecond, func() {
+				// Read the body once so we can both compute a hash and
+				// short-circuit the no-change case (e.g. when an editor
+				// touches a file's mtime without changing bytes, or when
+				// the sync engine just wrote this exact content).
+				body, err := os.ReadFile(p)
+				if err != nil {
+					return
+				}
+				newHash := hashBytes(body)
+				if syncSuppressor != nil && syncSuppressor.consume(p, newHash) {
+					return
+				}
 				sess, ok := store.byPath(p)
 				if !ok {
+					// Tombstoned at this RelPath? Resurrect rather than
+					// minting a fresh ID so other devices see continuity.
+					if rel := relPathFor(p, sessDir); rel != "" {
+						if t, ok := store.tombstoneByRelPath(rel); ok {
+							if err := store.resurrect(t.ID, p, string(body)); err == nil {
+								sess, _ = store.byID(t.ID)
+								goto Publish
+							}
+						}
+					}
 					// New file dropped into the sessions folder by an
 					// external editor (Obsidian etc.) — pull it into the
 					// store so the rest of the pipeline can publish it.
@@ -1342,6 +1810,16 @@ func watchLoop(w *fsnotify.Watcher, store *Store, h *hub, prev *prevCache, sessD
 					}
 					sess = ns
 				}
+				if sess.BodyHash != newHash {
+					_ = store.update(sess.ID, func(s *Session) {
+						s.BodyHash = newHash
+						if s.RelPath == "" {
+							s.RelPath = relPathFor(p, sessDir)
+						}
+					})
+					sess, _ = store.byID(sess.ID)
+				}
+			Publish:
 				if payload := buildUpdate(p, sess.ID, prev); payload != "" {
 					h.publish(sess.ID, payload)
 				}
@@ -1369,34 +1847,62 @@ func isTrackedSessionFile(p string) bool {
 	return strings.EqualFold(filepath.Ext(base), ".md")
 }
 
-// discoverSessions scans sessDir for non-hidden `.md` files that are not yet
-// in the store and registers each as a session. Returns the count added.
-// Run on startup so users who point at an existing Obsidian folder see all
-// notes appear in the sidebar without manual import.
+// discoverSessions walks sessDir recursively and registers any non-hidden
+// `.md` file not yet in the store. Returns the count added. Subdirs are
+// included so cloud-pushed sessions whose `rel_path` contains slashes
+// (e.g. `archive/2026/plan.md`) are visible after a sync. Hidden dirs
+// (e.g. `.obsidian/`) are skipped via fs.SkipDir.
 func discoverSessions(sessDir string, store *Store) int {
-	entries, err := os.ReadDir(sessDir)
-	if err != nil {
-		return 0
-	}
 	added := 0
-	for _, e := range entries {
-		if e.IsDir() {
-			continue
+	_ = filepath.WalkDir(sessDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
 		}
-		if !isTrackedSessionFile(e.Name()) {
-			continue
+		base := filepath.Base(path)
+		if d.IsDir() {
+			if path != sessDir && strings.HasPrefix(base, ".") {
+				return fs.SkipDir
+			}
+			return nil
 		}
-		full := filepath.Join(sessDir, e.Name())
-		if _, ok := store.byPath(full); ok {
-			continue
+		if !isTrackedSessionFile(path) {
+			return nil
 		}
-		if _, err := registerDiscoveredFile(full, store); err != nil {
-			log.Printf("auto-discover %s: %v", full, err)
-			continue
+		if _, ok := store.byPath(path); ok {
+			return nil
+		}
+		if _, err := registerDiscoveredFile(path, store); err != nil {
+			log.Printf("auto-discover %s: %v", path, err)
+			return nil
 		}
 		added++
-	}
+		return nil
+	})
 	return added
+}
+
+// watchSubdirs walks sessDir recursively and refcounts every non-hidden
+// directory into the watcher. Without this, fsnotify only fires for the
+// top-level sessions folder; nested sessions (created locally OR pulled
+// from sync as `archive/2026/plan.md`) would never publish updates and
+// the sync engine's local edits would never push back.
+func watchSubdirs(sessDir string, dw *dirWatcher) {
+	_ = filepath.WalkDir(sessDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return nil
+		}
+		base := filepath.Base(path)
+		if path != sessDir && strings.HasPrefix(base, ".") {
+			return fs.SkipDir
+		}
+		if path == sessDir {
+			return nil // already pinned by caller
+		}
+		if err := dw.ensure(path); err != nil {
+			log.Printf("watcher add %s: %v", path, err)
+		}
+		return nil
+	})
 }
 
 // registerDiscoveredFile creates a Session for an existing markdown file and

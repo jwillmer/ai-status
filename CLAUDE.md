@@ -29,6 +29,19 @@ When in doubt: rebuild. It's cheap (~2s) and the user's tab auto-reloads.
 - When asked: stage specific file paths (not `-A`), one `feat:`/`fix:` commit per user-visible change is ideal, HEREDOC message focused on *why*.
 - The user has already seen the diff via the live dashboard; keep the message focused on *why* the change was made, not *what* (the diff already says what).
 
+## Optional Supabase sync — what's in the binary
+
+The dashboard ships with optional cross-device sync. It's off until the user configures it via Settings → Sync; nothing in the sync layer runs otherwise. When you're touching code, these are the moving pieces and the rules around them:
+
+- **Files**: `sync.go` (REST client + engine), `sync_state.go` (write-suppression + cursor), `supabase/schema.sql` (the SQL the user pastes into their project), `docs/sync.md` (setup guide). Tests in `sync_test.go` and `store_test.go`.
+- **What syncs**: session markdown bodies + the index fields (title/pinned/archived/created/deletedAt). **Not synced**: Claude JSONL transcripts, `data/settings.json`, terminal scrollback, files outside the configured sessions folder.
+- **Conflict model**: last-write-wins on whole files, by `UpdatedAt`. No CRDT. Pulls on app start + on /api/sync/now; pushes are debounced via the global hub when local files change.
+- **Loop prevention**: `syncSuppressor` records expected fsnotify events (write hash, remove path) before sync writes/deletes; the watchLoop skips events that match. Don't bypass it — adding a new sync write path means adding a matching `suppressWrite` / `suppressRemove` call.
+- **Tombstones**: `Store.remove` is now a soft delete. The on-disk file is removed by the caller; the row is reaped after `tombstoneTTL` (30 days) on next load. `list / byID / byPath` filter tombstones; `listAll` doesn't (sync needs them).
+- **Auth**: email OTP through GoTrue — no redirect URLs, no allowlist. Tokens persist to `data/sync-auth.json` (mode 0600 on Unix). The anon key + project URL live in `data/settings.json` (public values).
+- **`data/`** is already in `.gitignore`, so `sync-auth.json`, `sync-state.json`, and `settings.json` are not committed. Don't paste anyone's anon key or JWT into a commit.
+- **Schema changes**: if you change the row shape in `sync.go` (`syncRow`), update `supabase/schema.sql` to match in the same diff. Re-running the schema is safe (uses `if not exists`), so users can paste the new version on top.
+
 ## Rebuild / restart workflow (required after code changes)
 
 Whenever you change **any source that ships in the binary** — `main.go`, anything under `static/` (HTML/CSS/JS), `skill/`, or the embedded icon — you must rebuild the binary and restart the running service so the user sees the change immediately. Do not leave it to the user.
