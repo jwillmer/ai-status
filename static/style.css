@@ -374,6 +374,7 @@ body.dragging, body.dragging * { user-select: none; cursor: col-resize !importan
   overflow-x: auto; white-space: nowrap; cursor: pointer;
   transition: border-color .15s, color .15s;
 }
+.path[hidden] { display: none; }
 .path:hover { border-color: var(--accent); color: var(--fg); }
 .path.copied { border-color: var(--ok); color: var(--ok); }
 .path.copied::after { content: " ✓ copied"; font-weight: 600; }
