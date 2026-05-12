@@ -227,15 +227,20 @@ func writeSessionRef(path, folder, claudeSession string) error {
 	}
 	text := string(data)
 
-	// Try to pick up existing created timestamp (from YAML or legacy block)
-	// so we don't lose it on rewrite.
+	// Carry over existing metadata we don't otherwise rewrite — created
+	// timestamp, title, focus. Without this, attaching a folder to a
+	// freshly-created session would silently drop the user's typed title
+	// (it ended up looking "ignored") and reset focus to blank.
 	existingCreated := ""
+	existingFocus := ""
 	if fm, _, ok := splitFrontMatter(text); ok {
 		var meta yamlFrontMatter
 		if yaml.Unmarshal([]byte(fm), &meta) == nil {
 			existingCreated = strings.TrimSpace(meta.Created)
+			existingFocus = strings.TrimSpace(meta.Focus)
 		}
 	}
+	existingTitle := strings.TrimSpace(fileTitle(path))
 
 	body := text
 	// If YAML front matter exists, strip it — we're about to re-emit one.
@@ -262,6 +267,11 @@ func writeSessionRef(path, folder, claudeSession string) error {
 
 	var b strings.Builder
 	b.WriteString("---\n")
+	if existingTitle != "" {
+		b.WriteString("title: ")
+		b.WriteString(yamlQuote(existingTitle))
+		b.WriteString("\n")
+	}
 	b.WriteString("project_folder: ")
 	b.WriteString(yamlQuote(folder))
 	b.WriteString("\n")
@@ -273,6 +283,11 @@ func writeSessionRef(path, folder, claudeSession string) error {
 	if existingCreated != "" {
 		b.WriteString("created: ")
 		b.WriteString(yamlQuote(existingCreated))
+		b.WriteString("\n")
+	}
+	if existingFocus != "" {
+		b.WriteString("focus: ")
+		b.WriteString(yamlQuote(existingFocus))
 		b.WriteString("\n")
 	}
 	b.WriteString("---\n\n")

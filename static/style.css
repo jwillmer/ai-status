@@ -363,6 +363,9 @@ body.dragging, body.dragging * { user-select: none; cursor: col-resize !importan
 }
 .updated-pill.fresh { color: var(--fg); border-color: var(--ok); }
 .updated-pill.stale::before { background: var(--muted); box-shadow: none; }
+
+/* Fresh-session prominent path bar — shown only before the file has been
+   externally edited so the user can quickly copy/paste the path to Claude. */
 .path {
   display: block; margin-top: 10px;
   background: var(--code-bg); border: 1px solid var(--border);
@@ -375,9 +378,8 @@ body.dragging, body.dragging * { user-select: none; cursor: col-resize !importan
 .path.copied { border-color: var(--ok); color: var(--ok); }
 .path.copied::after { content: " ✓ copied"; font-weight: 600; }
 
-#meta-toggle-btn[aria-pressed="true"] {
-  border-color: var(--accent); color: var(--accent);
-}
+#meta-toggle-btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+
 #meta-panel {
   margin-top: 10px;
   background: var(--code-bg); border: 1px solid var(--border);
@@ -387,6 +389,24 @@ body.dragging, body.dragging * { user-select: none; cursor: col-resize !importan
   display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px;
 }
 #meta-panel[hidden] { display: none; }
+.meta-value {
+  display: flex; align-items: center; gap: 6px; min-width: 0;
+}
+.meta-value .meta-text {
+  flex: 1; min-width: 0;
+  overflow-x: auto; white-space: nowrap;
+  cursor: pointer; padding: 2px 4px; border-radius: 4px;
+  transition: background .15s, color .15s;
+}
+.meta-value .meta-text:hover { background: var(--panel-2); color: var(--fg); }
+.meta-value .meta-text.copied { color: var(--ok); }
+.meta-value .meta-text.copied::after { content: " ✓"; font-weight: 600; }
+.meta-value .meta-open {
+  background: var(--panel-2); color: var(--fg); border: 1px solid var(--border);
+  padding: 2px 6px; border-radius: 4px; cursor: pointer; font-size: 12px;
+  flex-shrink: 0; line-height: 1;
+}
+.meta-value .meta-open:hover { border-color: var(--accent); color: var(--accent); }
 #meta-panel .k { color: var(--accent); font-weight: 600; }
 #meta-panel .v { color: var(--fg); word-break: break-all; }
 
@@ -499,17 +519,60 @@ body.dragging, body.dragging * { user-select: none; cursor: col-resize !importan
 }
 .dl-btn:hover { background: var(--accent-hover); }
 
-/* new-session dialog (also: folder-prompt dialog — same look) */
+/* new-session dialog (also: folder-prompt dialog, picker — same look) */
 #new-dialog,
 #folder-dialog,
-#move-dialog {
+#move-dialog,
+#picker-dialog {
   background: var(--panel); color: var(--fg); border: 1px solid var(--border);
   border-radius: 12px; padding: 0; max-width: 520px; width: calc(100% - 40px);
   box-shadow: 0 20px 60px rgba(0,0,0,.5);
 }
 #new-dialog::backdrop,
 #folder-dialog::backdrop,
-#move-dialog::backdrop { background: rgba(0,0,0,.6); backdrop-filter: blur(2px); }
+#move-dialog::backdrop,
+#picker-dialog::backdrop { background: rgba(0,0,0,.6); backdrop-filter: blur(2px); }
+
+/* Folder picker modal (in-browser, replaces native OS dialog). */
+#picker-dialog { max-width: 640px; }
+.picker-body { padding: 20px 24px; display: flex; flex-direction: column; gap: 10px; }
+.picker-head { display: flex; gap: 6px; }
+.picker-head input[type=text] {
+  flex: 1; min-width: 0;
+  background: var(--code-bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 6px;
+  padding: 8px 10px; font-family: Consolas, Menlo, monospace; font-size: 13px;
+}
+.picker-head input[type=text]:focus { border-color: var(--accent); outline: none; }
+.picker-head button {
+  background: var(--panel-2); color: var(--fg); border: 1px solid var(--border);
+  padding: 6px 12px; border-radius: 6px; cursor: pointer; font-size: 14px; min-width: 36px;
+}
+.picker-head button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.picker-head button:disabled { opacity: .4; cursor: not-allowed; }
+.picker-drives { display: flex; flex-wrap: wrap; gap: 6px; }
+.picker-drives button {
+  background: var(--panel-2); color: var(--fg); border: 1px solid var(--border);
+  padding: 4px 10px; border-radius: 6px; cursor: pointer; font-size: 12px;
+  font-family: Consolas, Menlo, monospace;
+}
+.picker-drives button:hover { border-color: var(--accent); color: var(--accent); }
+.picker-list {
+  list-style: none; margin: 0; padding: 4px;
+  background: var(--code-bg); border: 1px solid var(--border); border-radius: 6px;
+  height: 320px; overflow-y: auto;
+}
+.picker-list li {
+  padding: 6px 10px; border-radius: 4px; cursor: pointer;
+  font-family: Consolas, Menlo, monospace; font-size: 13px;
+  display: flex; align-items: center; gap: 6px;
+}
+.picker-list li::before { content: "📁"; font-size: 12px; }
+.picker-list li:hover { background: var(--panel-2); }
+.picker-list li.empty { color: var(--muted); cursor: default; font-style: italic; }
+.picker-list li.empty::before { content: ""; }
+.picker-list li.empty:hover { background: transparent; }
+.picker-hint { margin: 0 !important; }
 .new-body { padding: 20px 24px 20px; display: flex; flex-direction: column; gap: 8px; }
 .new-body h2 { margin: 0 0 8px; font-size: 18px; }
 .new-body label {
@@ -541,11 +604,13 @@ body.dragging, body.dragging * { user-select: none; cursor: col-resize !importan
 }
 .new-actions button:hover { border-color: var(--accent); color: var(--accent); }
 #new-create,
-#folder-save {
+#folder-save,
+#picker-select {
   background: var(--accent); color: #0f1115; border-color: var(--accent); font-weight: 600;
 }
 #new-create:hover,
-#folder-save:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #0f1115; }
+#folder-save:hover,
+#picker-select:hover { background: var(--accent-hover); border-color: var(--accent-hover); color: #0f1115; }
 
 /* Mobile off-canvas drawer — hamburger top-left, sidebar slides in from
    the left over a dim overlay. Standard Material / iOS pattern. */
@@ -635,11 +700,5 @@ body.dragging, body.dragging * { user-select: none; cursor: col-resize !importan
   }
   .actions > * {
     flex-shrink: 0;
-  }
-  .path {
-    scrollbar-width: none;
-  }
-  .path::-webkit-scrollbar {
-    display: none;
   }
 }

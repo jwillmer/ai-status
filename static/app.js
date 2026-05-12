@@ -5,15 +5,12 @@ const archCount = $("#arch-count");
 const searchInput = $("#search");
 const viewHead = $("#view-head");
 const viewTitle = $("#view-title");
-const viewPath = $("#view-path");
 const viewUpdated = $("#view-updated");
 const viewEl = $("#view");
 const archBtn = $("#arch-btn");
 const delBtn = $("#del-btn");
 const showCmdBtn = $("#show-cmd-btn");
 const openCmdBtn = $("#open-cmd-btn");
-const openFileBtn = $("#open-file-btn");
-const moveFileBtn = $("#move-file-btn");
 const metaToggleBtn = $("#meta-toggle-btn");
 const metaPanel = $("#meta-panel");
 const viewFocus = $("#view-focus");
@@ -42,7 +39,6 @@ const newForm = $("#new-form");
 const newTitleInput = $("#new-title");
 const newFolderInput = $("#new-folder");
 const newFolderBrowse = $("#new-folder-browse");
-const newFolderPicker = $("#new-folder-picker");
 const newFileDirInput = $("#new-file-dir");
 const newFileDirBrowse = $("#new-file-dir-browse");
 const newCancelBtn = $("#new-cancel");
@@ -51,13 +47,13 @@ const moveDialog = $("#move-dialog");
 const moveForm = $("#move-form");
 const moveInput = $("#move-input");
 const moveBrowse = $("#move-browse");
+const viewPath = $("#view-path");
 const moveCancelBtn = $("#move-cancel");
 
 const folderDialog = $("#folder-dialog");
 const folderForm = $("#folder-form");
 const folderInput = $("#folder-input");
 const folderBrowse = $("#folder-browse");
-const folderPicker = $("#folder-picker");
 const folderCancelBtn = $("#folder-cancel");
 
 let sessions = [];
@@ -305,35 +301,125 @@ if (newForm) {
   });
 }
 if (newCancelBtn) newCancelBtn.onclick = () => newDialog.close();
-async function pickFolderNative() {
-  // Backend spawns the Windows FolderBrowserDialog so we get a real absolute
-  // path instead of the sandboxed folder-name-only that <input webkitdirectory>
-  // gives. 204 → user cancelled.
-  const res = await fetch("/api/pick-folder", { method: "POST" });
-  if (res.status === 204) return "";
-  if (!res.ok) throw new Error(`pick-folder failed: ${res.status}`);
-  const data = await res.json();
-  return data.folder || "";
+// In-browser folder picker. Calls /api/list-dir to walk the local FS through
+// the server (which runs on the user's machine, so it sees real paths). This
+// replaces the native OS dialog — that one had z-order problems where the
+// FolderBrowserDialog landed behind the browser window and looked like
+// nothing happened. Works identically in every browser, no native code.
+const pickerDialog = $("#picker-dialog");
+const pickerUp = $("#picker-up");
+const pickerHome = $("#picker-home");
+const pickerPathInput = $("#picker-path");
+const pickerDrives = $("#picker-drives");
+const pickerList = $("#picker-list");
+const pickerCancel = $("#picker-cancel");
+const pickerSelect = $("#picker-select");
+
+let pickerResolve = null;
+let pickerCurrent = "";
+let pickerParent = "";
+let pickerHomePath = "";
+
+async function pickFolder(initial) {
+  return new Promise(async (resolve) => {
+    pickerResolve = resolve;
+    await pickerNavigate(initial || "");
+    pickerDialog.showModal();
+    // Defer focus so the dialog finishes opening first.
+    setTimeout(() => pickerPathInput.focus(), 0);
+  });
 }
+
+async function pickerNavigate(path) {
+  try {
+    const res = await fetch("/api/list-dir?path=" + encodeURIComponent(path || ""));
+    if (!res.ok) throw new Error(`list-dir ${res.status}`);
+    const data = await res.json();
+    pickerCurrent = data.path || "";
+    pickerParent = data.parent || "";
+    pickerHomePath = data.home || "";
+    pickerPathInput.value = pickerCurrent;
+    pickerUp.disabled = !pickerParent;
+    pickerHome.disabled = !pickerHomePath;
+    // Drives (Windows only).
+    if (Array.isArray(data.drives) && data.drives.length) {
+      pickerDrives.hidden = false;
+      pickerDrives.innerHTML = "";
+      for (const d of data.drives) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.textContent = d;
+        b.onclick = () => pickerNavigate(d);
+        pickerDrives.appendChild(b);
+      }
+    } else {
+      pickerDrives.hidden = true;
+    }
+    // Folder entries.
+    pickerList.innerHTML = "";
+    const entries = data.entries || [];
+    if (!entries.length) {
+      const li = document.createElement("li");
+      li.className = "empty";
+      li.textContent = "(no subfolders)";
+      pickerList.appendChild(li);
+    } else {
+      for (const e of entries) {
+        const li = document.createElement("li");
+        li.textContent = e.name;
+        li.title = e.path;
+        li.onclick = () => pickerNavigate(e.path);
+        pickerList.appendChild(li);
+      }
+    }
+    pickerList.scrollTop = 0;
+  } catch (e) {
+    alert("Browse failed: " + e.message);
+  }
+}
+
+pickerUp.onclick = () => { if (pickerParent) pickerNavigate(pickerParent); };
+pickerHome.onclick = () => { if (pickerHomePath) pickerNavigate(pickerHomePath); };
+pickerPathInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    pickerNavigate(pickerPathInput.value.trim());
+  }
+});
+pickerCancel.onclick = () => {
+  pickerDialog.close();
+};
+pickerSelect.onclick = () => {
+  // Honour a typed-but-not-Entered path: prefer the input value over the
+  // last-loaded directory so users who paste a path get what they expect.
+  const typed = pickerPathInput.value.trim();
+  const finalPath = typed || pickerCurrent;
+  if (pickerResolve) { pickerResolve(finalPath); pickerResolve = null; }
+  pickerDialog.close();
+};
+pickerDialog.addEventListener("close", () => {
+  if (pickerResolve) { pickerResolve(""); pickerResolve = null; }
+});
+// Click outside to cancel (consistent with the other dialogs).
+pickerDialog.addEventListener("click", (e) => {
+  if (e.target === pickerDialog) {
+    const r = pickerDialog.getBoundingClientRect();
+    if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) {
+      pickerDialog.close();
+    }
+  }
+});
 
 if (newFolderBrowse) {
   newFolderBrowse.onclick = async () => {
-    try {
-      const folder = await pickFolderNative();
-      if (folder) newFolderInput.value = folder;
-    } catch (e) {
-      alert("Browse failed: " + e.message);
-    }
+    const folder = await pickFolder(newFolderInput.value);
+    if (folder) newFolderInput.value = folder;
   };
 }
 if (newFileDirBrowse) {
   newFileDirBrowse.onclick = async () => {
-    try {
-      const folder = await pickFolderNative();
-      if (folder) newFileDirInput.value = folder;
-    } catch (e) {
-      alert("Browse failed: " + e.message);
-    }
+    const folder = await pickFolder(newFileDirInput.value);
+    if (folder) newFileDirInput.value = folder;
   };
 }
 if (newDialog) {
@@ -365,6 +451,10 @@ function applyUpdate(data) {
       s.updated = currentUpdated.toISOString();
       renderList();
     }
+    // First external edit flips us out of "fresh" state — hide the prominent
+    // copy bar (path stays available via the Metadata panel).
+    updateViewPath();
+    if (metaShown) updateMetaPanelVisibility();
     // Notifications are fired from the global stream (/api/events) so they
     // cover every session, not just the currently-viewed one.
   } catch (e) {
@@ -436,10 +526,10 @@ function openSession(id) {
   viewHead.hidden = false;
   viewTitle.textContent = s.title;
   setDocTitle(s.title);
-  viewPath.textContent = s.path;
   archBtn.textContent = s.archived ? "Unarchive" : "Archive";
   currentUpdated = s.updated ? new Date(s.updated) : null;
   updateUpdatedPill();
+  updateViewPath();
   updateFocus(s.focus);
   updateOpenCmdVisibility();
   updateMetaPanelVisibility();
@@ -499,22 +589,27 @@ async function deleteSession() {
   updateCmdCollapse();
 }
 
-async function copyPath() {
-  if (!currentId) return;
-  const s = sessions.find(x => x.id === currentId);
-  if (!s) return;
+// Click-to-copy helper for metadata rows. The element gets a brief "copied"
+// flash; falls back to a selection-range hack for the (rare) browsers that
+// can't reach navigator.clipboard from a non-HTTPS origin.
+async function copyToClipboard(text, flashEl) {
+  if (!text) return;
   try {
-    await navigator.clipboard.writeText(s.path);
+    await navigator.clipboard.writeText(text);
   } catch {
-    const r = document.createRange();
-    r.selectNode(viewPath);
-    getSelection().removeAllRanges();
-    getSelection().addRange(r);
-    document.execCommand?.("copy");
+    if (flashEl) {
+      const r = document.createRange();
+      r.selectNodeContents(flashEl);
+      getSelection().removeAllRanges();
+      getSelection().addRange(r);
+      document.execCommand?.("copy");
+    }
   }
-  viewPath.classList.add("copied");
-  clearTimeout(copyPath._t);
-  copyPath._t = setTimeout(() => viewPath.classList.remove("copied"), 1100);
+  if (flashEl) {
+    flashEl.classList.add("copied");
+    clearTimeout(flashEl._copyT);
+    flashEl._copyT = setTimeout(() => flashEl.classList.remove("copied"), 1100);
+  }
 }
 
 function startRename() {
@@ -567,8 +662,6 @@ viewTitle.addEventListener("keydown", (e) => {
     viewTitle.contentEditable = "false";
   }
 });
-viewPath.addEventListener("click", copyPath);
-
 newBtn.onclick = createSession;
 archBtn.onclick = toggleArchive;
 delBtn.onclick = deleteSession;
@@ -737,7 +830,8 @@ function startGlobalStream() {
       if (p.path && p.path !== s.path) {
         s.path = p.path;
         if (p.sessionId === currentId) {
-          viewPath.textContent = p.path;
+          updateViewPath();
+          updateMetaPanelVisibility();
         }
       }
       renderList();
@@ -1429,12 +1523,8 @@ async function closeCmdForCurrent() {
 
 if (folderBrowse) {
   folderBrowse.onclick = async () => {
-    try {
-      const folder = await pickFolderNative();
-      if (folder) folderInput.value = folder;
-    } catch (e) {
-      alert("Browse failed: " + e.message);
-    }
+    const folder = await pickFolder(folderInput.value);
+    if (folder) folderInput.value = folder;
   };
 }
 if (folderCancelBtn) {
@@ -1589,17 +1679,6 @@ if (showCmdBtn) {
   };
 }
 
-if (openFileBtn) {
-  openFileBtn.onclick = async () => {
-    if (!currentId) return;
-    try {
-      await api(`/api/sessions/${currentId}/open`, { method: "POST" });
-    } catch (e) {
-      alert("Open failed: " + e.message);
-    }
-  };
-}
-
 function openMoveDialog() {
   if (!moveDialog || !currentId) return;
   const s = sessions.find(x => x.id === currentId);
@@ -1611,17 +1690,10 @@ function openMoveDialog() {
   queueMicrotask(() => { moveInput.focus(); moveInput.select(); });
 }
 
-if (moveFileBtn) {
-  moveFileBtn.onclick = openMoveDialog;
-}
 if (moveBrowse) {
   moveBrowse.onclick = async () => {
-    try {
-      const folder = await pickFolderNative();
-      if (folder) moveInput.value = folder;
-    } catch (e) {
-      alert("Browse failed: " + e.message);
-    }
+    const folder = await pickFolder(moveInput.value);
+    if (folder) moveInput.value = folder;
   };
 }
 if (moveCancelBtn) moveCancelBtn.onclick = () => moveDialog && moveDialog.close();
@@ -1646,7 +1718,8 @@ if (moveForm) {
       const s = sessions.find(x => x.id === currentId);
       if (s && updated && updated.path) s.path = updated.path;
       if (currentId === (updated && updated.id) && updated.path) {
-        viewPath.textContent = updated.path;
+        updateViewPath();
+        await refreshMeta(currentId);
       }
       moveDialog.close();
       renderList();
@@ -1679,10 +1752,49 @@ function updateOpenCmdVisibility() {
 const META_SHOWN_KEY = "meta_panel_shown";
 let metaShown = localStorage.getItem(META_SHOWN_KEY) === "1";
 
+// The file is "fresh" right after creation — only the skeleton-write +
+// optional writeSessionRef rewrite have touched it, both within a few ms of
+// `created`. As soon as the agent (or any external editor) saves the file
+// the gap grows past this threshold and the prominent path bar disappears.
+const EXTERNAL_EDIT_THRESHOLD_MS = 3000;
+function externallyEdited(s) {
+  if (!s || !s.created || !s.updated) return false;
+  const c = Date.parse(s.created);
+  const u = Date.parse(s.updated);
+  if (!Number.isFinite(c) || !Number.isFinite(u)) return false;
+  return (u - c) > EXTERNAL_EDIT_THRESHOLD_MS;
+}
+
+function updateViewPath() {
+  if (!viewPath) return;
+  const s = currentId && sessions.find(x => x.id === currentId);
+  if (!s || !s.path || externallyEdited(s)) {
+    viewPath.hidden = true;
+    viewPath.textContent = "";
+    return;
+  }
+  viewPath.textContent = s.path;
+  viewPath.hidden = false;
+}
+
+async function copyPath() {
+  if (!viewPath || viewPath.hidden) return;
+  const text = viewPath.textContent || "";
+  await copyToClipboard(text, viewPath);
+}
+if (viewPath) viewPath.addEventListener("click", copyPath);
+
 function renderMetaPanel(meta) {
   if (!metaPanel) return;
   metaPanel.innerHTML = "";
-  if (!meta || !meta.length) {
+  const rows = (meta && meta.slice()) || [];
+  // Synthetic row: the .md file path itself isn't in the YAML, so inject it
+  // so users can copy / open / move from one place.
+  const s = currentId && sessions.find(x => x.id === currentId);
+  if (s && s.path) {
+    rows.push({ key: "session_file", value: s.path });
+  }
+  if (!rows.length) {
     const n = document.createElement("div");
     n.className = "v";
     n.textContent = "(no frontmatter)";
@@ -1690,13 +1802,50 @@ function renderMetaPanel(meta) {
     metaPanel.appendChild(n);
     return;
   }
-  for (const row of meta) {
+  for (const row of rows) {
     const k = document.createElement("div");
     k.className = "k";
     k.textContent = row.key;
     const v = document.createElement("div");
-    v.className = "v";
-    v.textContent = row.value;
+    v.className = "v meta-value";
+    // Text span — clickable to copy.
+    const text = document.createElement("span");
+    text.className = "meta-text";
+    text.textContent = row.value;
+    text.title = "Click to copy";
+    text.onclick = () => copyToClipboard(row.value, text);
+    v.appendChild(text);
+    // Open-in-OS icon for the two filesystem-path rows.
+    if (row.key === "project_folder" || row.key === "session_file") {
+      const open = document.createElement("button");
+      open.type = "button";
+      open.className = "meta-open";
+      open.textContent = "↗";
+      open.title = row.key === "project_folder"
+        ? "Open folder in system file manager"
+        : "Open .md file in system default editor";
+      open.onclick = async () => {
+        if (!currentId) return;
+        const q = row.key === "project_folder" ? "?target=folder" : "";
+        try {
+          await api(`/api/sessions/${currentId}/open${q}`, { method: "POST" });
+        } catch (e) {
+          alert("Open failed: " + e.message);
+        }
+      };
+      v.appendChild(open);
+    }
+    // Move icon — only on session_file. Moves the .md file to another folder
+    // (replaces the dedicated Move… header button).
+    if (row.key === "session_file") {
+      const move = document.createElement("button");
+      move.type = "button";
+      move.className = "meta-open";
+      move.textContent = "✎";
+      move.title = "Move the .md file to another folder";
+      move.onclick = () => openMoveDialog();
+      v.appendChild(move);
+    }
     metaPanel.appendChild(k);
     metaPanel.appendChild(v);
   }

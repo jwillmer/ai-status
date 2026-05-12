@@ -80,14 +80,12 @@
       <div class="actions">
         <button id="show-cmd-btn" hidden>▶ Show cmd</button>
         <button id="open-cmd-btn" hidden title="Open cmd window in session folder (runs claude --resume when available)">Open cmd</button>
-        <button id="open-file-btn" title="Open .md file in system default editor">Open file</button>
-        <button id="move-file-btn" title="Move the .md file to another folder (e.g. into a project repo so it can be committed)">Move…</button>
         <button id="meta-toggle-btn" aria-pressed="false" title="Show / hide YAML frontmatter">Metadata</button>
         <button id="arch-btn"></button>
         <button id="del-btn" class="danger" title="Delete">Delete</button>
       </div>
     </div>
-    <code id="view-path" class="path" title="Click to copy"></code>
+    <code id="view-path" class="path" title="Click to copy — paste into Claude to start writing here" hidden></code>
     <div id="meta-panel" hidden></div>
   </header>
   <div id="split">
@@ -140,13 +138,12 @@
 <dialog id="folder-dialog">
   <form id="folder-form" method="dialog" class="new-body">
     <h2>Set working folder</h2>
-    <p class="hint">This session has no folder yet. Paste an absolute path (or use Browse for the name only).</p>
+    <p class="hint">This session has no folder yet. Paste an absolute path or use Browse.</p>
 
     <label for="folder-input">Working folder</label>
     <div class="folder-row">
       <input type="text" id="folder-input" placeholder="C:\path\to\project" autocomplete="off" spellcheck="false" required>
       <button type="button" id="folder-browse" title="Browse for folder">Browse…</button>
-      <input type="file" id="folder-picker" webkitdirectory directory multiple hidden>
     </div>
 
     <div class="new-actions">
@@ -172,6 +169,23 @@
       <button type="submit" id="move-save">Move</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="picker-dialog">
+  <div class="picker-body">
+    <div class="picker-head">
+      <button type="button" id="picker-up" title="Up one level">↑</button>
+      <button type="button" id="picker-home" title="Home folder">⌂</button>
+      <input type="text" id="picker-path" autocomplete="off" spellcheck="false" placeholder="Type a path and press Enter">
+    </div>
+    <div id="picker-drives" class="picker-drives" hidden></div>
+    <ul id="picker-list" class="picker-list"></ul>
+    <p class="hint picker-hint">Click a folder to enter it. Press <strong>Select this folder</strong> to pick the current path.</p>
+    <div class="new-actions">
+      <button type="button" id="picker-cancel">Cancel</button>
+      <button type="button" id="picker-select">Select this folder</button>
+    </div>
+  </div>
 </dialog>
 
 <dialog id="help-dialog">

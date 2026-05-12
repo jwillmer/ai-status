@@ -7,28 +7,7 @@ import (
 	"encoding/binary"
 	"io/fs"
 	"os/exec"
-	"strings"
-	"syscall"
 )
-
-// pickFolderNative spawns a Windows FolderBrowserDialog via PowerShell and
-// returns the selected absolute path, or "" on cancel.
-func pickFolderNative() (string, error) {
-	script := `Add-Type -AssemblyName System.Windows.Forms;` +
-		`$f = New-Object System.Windows.Forms.FolderBrowserDialog;` +
-		`$f.Description = 'Select working folder';` +
-		`$f.ShowNewFolderButton = $true;` +
-		`if ($f.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) { Write-Output $f.SelectedPath }`
-	cmd := exec.Command("powershell", "-NoProfile", "-STA", "-WindowStyle", "Hidden", "-Command", script)
-	// Hide the PowerShell console window that would otherwise flash on screen
-	// while the FolderBrowserDialog spools up.
-	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
-	out, err := cmd.Output()
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(out)), nil
-}
 
 // openFileInDefaultApp opens path with the system's default handler.
 // Windows: `cmd /c start "" <path>`. Empty `""` is the window-title arg that

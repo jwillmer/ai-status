@@ -788,21 +788,75 @@ func runServer(ln net.Listener, rootAbs string) error {
 		}
 	})
 
-	mux.HandleFunc("/api/pick-folder", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method", 405)
-			return
+	// /api/list-dir powers the in-browser folder picker. Returns directories
+	// under `?path=` (empty → user home), the parent of that path, available
+	// drives on Windows, and the user-home shortcut. The native dialog is
+	// gone because OS-level z-order issues left it stuck behind the browser
+	// for some users — an in-DOM modal is reliable cross-browser.
+	mux.HandleFunc("/api/list-dir", func(w http.ResponseWriter, r *http.Request) {
+		p := strings.TrimSpace(r.URL.Query().Get("path"))
+		home, _ := os.UserHomeDir()
+		if p == "" {
+			p = home
+			if p == "" {
+				if runtime.GOOS == "windows" {
+					p = `C:\`
+				} else {
+					p = "/"
+				}
+			}
 		}
-		folder, err := pickFolderNative()
+		abs, err := filepath.Abs(p)
 		if err != nil {
-			http.Error(w, err.Error(), 500)
+			http.Error(w, err.Error(), 400)
 			return
 		}
-		if folder == "" {
-			w.WriteHeader(204) // user cancelled
+		entries, err := os.ReadDir(abs)
+		if err != nil {
+			http.Error(w, err.Error(), 400)
 			return
 		}
-		writeJSON(w, map[string]any{"folder": folder})
+		dirs := make([]map[string]string, 0, len(entries))
+		for _, e := range entries {
+			// Resolve symlinks so junctioned/linked dirs show up as folders too.
+			isDir := e.IsDir()
+			if !isDir && e.Type()&os.ModeSymlink != 0 {
+				if st, err := os.Stat(filepath.Join(abs, e.Name())); err == nil && st.IsDir() {
+					isDir = true
+				}
+			}
+			if !isDir {
+				continue
+			}
+			dirs = append(dirs, map[string]string{
+				"name": e.Name(),
+				"path": filepath.Join(abs, e.Name()),
+			})
+		}
+		sort.Slice(dirs, func(i, j int) bool {
+			return strings.ToLower(dirs[i]["name"]) < strings.ToLower(dirs[j]["name"])
+		})
+		parent := filepath.Dir(abs)
+		if parent == abs { // drive root or fs root
+			parent = ""
+		}
+		out := map[string]any{
+			"path":    abs,
+			"parent":  parent,
+			"home":    home,
+			"entries": dirs,
+		}
+		if runtime.GOOS == "windows" {
+			drives := []string{}
+			for c := 'A'; c <= 'Z'; c++ {
+				d := string(c) + `:\`
+				if _, err := os.Stat(d); err == nil {
+					drives = append(drives, d)
+				}
+			}
+			out["drives"] = drives
+		}
+		writeJSON(w, out)
 	})
 
 	mux.HandleFunc("/api/events", func(w http.ResponseWriter, r *http.Request) {
@@ -1179,9 +1233,21 @@ _(free-form scratchpad — decisions, links, constraints)_
 				http.Error(w, "not found", 404)
 				return
 			}
+			// target=folder opens the session's project_folder; default opens
+			// the .md file itself. Scoped to known sessions so this isn't an
+			// arbitrary-path shell-out endpoint.
+			target := sess.Path
+			if r.URL.Query().Get("target") == "folder" {
+				folder, _, _, _ := parseSessionMeta(sess.Path)
+				if folder == "" {
+					http.Error(w, "no project folder set", 400)
+					return
+				}
+				target = folder
+			}
 			// Delegate to the platform's default-handler invocation
 			// (`cmd /c start` on Windows, `xdg-open` on Linux, `open` on macOS).
-			if err := openFileInDefaultApp(sess.Path); err != nil {
+			if err := openFileInDefaultApp(target); err != nil {
 				http.Error(w, err.Error(), 500)
 				return
 			}
