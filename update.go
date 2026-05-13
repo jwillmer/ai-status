@@ -276,10 +276,49 @@ func selfUpdatePreconditions(gi gitInfo, info updateInfo) (bool, string) {
 	if gi.Branch != "" && gi.Branch != "main" && gi.Branch != "HEAD" {
 		return false, fmt.Sprintf("local branch is %q (not main) — switch to main or pull manually", gi.Branch)
 	}
-	if _, err := exec.LookPath("go"); err != nil {
+	if findGo() == "" {
 		return false, "go toolchain required for self-update"
 	}
 	return true, ""
+}
+
+// findGo locates the go binary. exec.LookPath only sees the inherited PATH,
+// which on Windows often omits C:\Program Files\Go\bin because Go's installer
+// doesn't always add it system-wide and the tray-launched exe inherits the
+// system PATH (not the user's shell PATH). Fall back to the well-known install
+// locations on each OS so a standard install Just Works for self-update.
+func findGo() string {
+	if p, err := exec.LookPath("go"); err == nil {
+		return p
+	}
+	var candidates []string
+	switch runtime.GOOS {
+	case "windows":
+		candidates = []string{
+			os.ExpandEnv(`${ProgramFiles}\Go\bin\go.exe`),
+			os.ExpandEnv(`${ProgramW6432}\Go\bin\go.exe`),
+			os.ExpandEnv(`${ProgramFiles(x86)}\Go\bin\go.exe`),
+			os.ExpandEnv(`${LOCALAPPDATA}\Programs\Go\bin\go.exe`),
+			`C:\Program Files\Go\bin\go.exe`,
+		}
+	default:
+		candidates = []string{
+			"/usr/local/go/bin/go",
+			"/opt/homebrew/bin/go",
+			"/opt/go/bin/go",
+			os.ExpandEnv("$HOME/go/bin/go"),
+			os.ExpandEnv("$HOME/.local/go/bin/go"),
+		}
+	}
+	for _, p := range candidates {
+		if p == "" {
+			continue
+		}
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
 }
 
 // fetchUpstream populates info.Latest, info.LatestMessage, and info.Behind.
@@ -413,7 +452,11 @@ func runSelfUpdate(ctx context.Context) error {
 	if runtime.GOOS == "windows" {
 		ldflags = "-H windowsgui " + ldflags
 	}
-	if _, err := runCmd(root, "go", "build", "-ldflags="+ldflags, "-o", newPath, "."); err != nil {
+	goBin := findGo()
+	if goBin == "" {
+		return r.fail(phaseBuild, errors.New("go toolchain not found"))
+	}
+	if _, err := runCmd(root, goBin, "build", "-ldflags="+ldflags, "-o", newPath, "."); err != nil {
 		return r.fail(phaseBuild, err)
 	}
 
