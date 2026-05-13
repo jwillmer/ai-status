@@ -443,12 +443,25 @@ func runSelfUpdate(ctx context.Context) error {
 	if out, err := runCmd(root, "git", "rev-parse", "HEAD"); err == nil {
 		newSHA = strings.TrimSpace(out)
 	}
+	// Recompute the version string from the freshly-pulled tree instead of
+	// reusing the running binary's Version constant — otherwise a once-
+	// stamped value (e.g. a dev build's "-dirty" suffix) would propagate
+	// through every self-update. No --dirty here: the self-update tree is
+	// expected to be clean after `git pull --ff-only`, and end users
+	// shouldn't see a dev-only marker. Dev rebuilds (scripts/build.sh)
+	// keep --dirty so contributors get the local-change cue.
+	newVer := "dev"
+	if out, err := runCmd(root, "git", "describe", "--tags", "--always"); err == nil {
+		if v := strings.TrimSpace(out); v != "" {
+			newVer = v
+		}
+	}
 
 	r.emit(updateProgress{Phase: phaseBuilding, Detail: "go build (this can take a few seconds)"})
 	newPath := exe + ".new"
 	_ = os.Remove(newPath)
 
-	ldflags := fmt.Sprintf("-X main.Version=%s -X main.CommitSHA=%s", Version, newSHA)
+	ldflags := fmt.Sprintf("-X main.Version=%s -X main.CommitSHA=%s", newVer, newSHA)
 	if runtime.GOOS == "windows" {
 		ldflags = "-H windowsgui " + ldflags
 	}
