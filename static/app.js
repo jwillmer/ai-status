@@ -851,29 +851,73 @@ function startGlobalStream() {
  * live updates are paused. Driven by the always-on /api/events stream.
  * ------------------------------------------------------------------------- */
 let connErrorTimer = null;
+let connRetryTimer = null;
+let connWasDown = false;
 function markConnAlive() {
   if (connErrorTimer) { clearTimeout(connErrorTimer); connErrorTimer = null; }
-  if (connBanner && !connBanner.hidden) {
-    // Server was unreachable long enough to show the banner and is now back.
-    // Most likely it was restarted — reload so the UI picks up any new static
-    // assets (HTML/CSS/JS). Plain cached-asset case is cheap because the
-    // server sets no-cache on /favicon.* and /api/*; /static/* is served by
-    // http.FileServer which honours If-Modified-Since.
+  if (connRetryTimer) { clearInterval(connRetryTimer); connRetryTimer = null; }
+  if (connWasDown) {
+    // Connection dropped long enough to be considered down (banner may or
+    // may not have actually rendered, depending on restart speed) and is
+    // now back. Most likely the server was restarted — reload so the UI
+    // picks up any new static assets (HTML/CSS/JS). Plain cached-asset
+    // case is cheap because the server sets no-cache on /favicon.* and
+    // /api/*; /static/* is served by http.FileServer which honours
+    // If-Modified-Since.
     location.reload();
     return;
   }
 }
 function markConnError() {
   if (!connBanner) return;
-  if (connErrorTimer || !connBanner.hidden) return;
+  if (connErrorTimer || connWasDown) return;
   // Grace period: browsers fire onerror during normal reconnect blips.
   connErrorTimer = setTimeout(() => {
     connErrorTimer = null;
     if (!globalEs || globalEs.readyState !== EventSource.OPEN) {
+      connWasDown = true;
       connBanner.hidden = false;
+      startConnRetry();
     }
   }, 2500);
 }
+// Watchdog: EventSource auto-reconnect can stall after long downtime or
+// laptop sleep — the browser either gives up (readyState=CLOSED, no more
+// retries) or stays stuck in CONNECTING without firing onopen, so the
+// banner never resolves on its own. While the banner is visible AND the
+// tab is foregrounded, probe /api/version directly; on first 200 reload
+// the page (same effect as the onopen path). Also recreate the
+// EventSource if it has gone to CLOSED.
+//
+// When the tab is hidden we deliberately stop the interval — no point
+// hammering the server for a user who isn't watching. visibilitychange
+// below restarts the probe (and runs one immediately) on return.
+async function probeConn() {
+  if (globalEs && globalEs.readyState === EventSource.CLOSED) {
+    startGlobalStream();
+  }
+  try {
+    const r = await fetch("/api/version", { cache: "no-store" });
+    if (r.ok) {
+      if (connRetryTimer) { clearInterval(connRetryTimer); connRetryTimer = null; }
+      location.reload();
+    }
+  } catch { /* still down */ }
+}
+function startConnRetry() {
+  if (connRetryTimer) return;
+  if (document.visibilityState !== "visible") return;
+  connRetryTimer = setInterval(probeConn, 3000);
+}
+document.addEventListener("visibilitychange", () => {
+  if (!connBanner || connBanner.hidden) return;
+  if (document.visibilityState === "visible") {
+    probeConn();
+    startConnRetry();
+  } else if (connRetryTimer) {
+    clearInterval(connRetryTimer); connRetryTimer = null;
+  }
+});
 
 
 if (notifyBtn) notifyBtn.onclick = onNotifyClick;
