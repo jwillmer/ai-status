@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"unicode/utf16"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -99,8 +100,9 @@ func startMenuShortcut() (string, error) {
 // registerApp makes the running exe discoverable as an installed app:
 // a Start-menu shortcut plus a per-user uninstall registry entry. Both
 // pieces are idempotent so this is cheap to call on every startup — the
-// shortcut is only (re)created when missing, and the registry values are
-// refreshed so DisplayVersion tracks self-updates.
+// shortcut is only rewritten when it doesn't already point at this exe,
+// and the registry values are refreshed so DisplayVersion tracks
+// self-updates.
 func registerApp(exe, dir string) error {
 	if err := ensureStartMenuShortcut(exe, dir); err != nil {
 		return err
@@ -113,14 +115,18 @@ func ensureStartMenuShortcut(exe, dir string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := os.Stat(lnk); err == nil {
-		return nil // already there — don't spawn PowerShell on every boot
+	// Fast path: if a shortcut already points at *this* exe, leave it be — so
+	// we don't spawn PowerShell on every boot. If the exe has since moved, the
+	// old path won't be found in the .lnk and we fall through to rewrite it.
+	if shortcutPointsTo(lnk, exe) {
+		return nil
 	}
 	if err := os.MkdirAll(filepath.Dir(lnk), 0o755); err != nil {
 		return err
 	}
-	// Create the .lnk via the WScript.Shell COM object. Guarded by the Stat
-	// above, this PowerShell spawn happens once (first run), which beats
+	// Create the .lnk via the WScript.Shell COM object. Guarded by the
+	// shortcutPointsTo check above, this PowerShell spawn happens only when
+	// the shortcut is missing or stale (usually just first run), which beats
 	// hand-rolling the binary shell-link format. Single-quoted PS strings
 	// keep Windows backslash paths literal.
 	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
@@ -131,6 +137,27 @@ func ensureStartMenuShortcut(exe, dir string) error {
 		q(lnk), q(exe), q(dir), q(exe+",0"))
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps)
 	return cmd.Run()
+}
+
+// shortcutPointsTo reports whether the .lnk at lnk targets exe. WScript.Shell
+// embeds the absolute target path in the shortcut (ANSI in the LinkInfo block,
+// UTF-16LE in the string-data section), so a cheap byte scan for the path in
+// either encoding tells us if it's current — no COM read / PowerShell spawn on
+// the happy path. A moved exe simply won't match, triggering a rewrite.
+func shortcutPointsTo(lnk, exe string) bool {
+	data, err := os.ReadFile(lnk)
+	if err != nil {
+		return false // missing/unreadable → (re)create it
+	}
+	if bytes.Contains(data, []byte(exe)) {
+		return true
+	}
+	u := utf16.Encode([]rune(exe))
+	b := make([]byte, len(u)*2)
+	for i, c := range u {
+		binary.LittleEndian.PutUint16(b[i*2:], c)
+	}
+	return bytes.Contains(data, b)
 }
 
 func ensureUninstallEntry(exe, dir string) error {
@@ -167,11 +194,12 @@ func ensureUninstallEntry(exe, dir string) error {
 // `--uninstall` (e.g. the Settings uninstall button) doesn't leave a server
 // holding the port and a tray icon behind. It matches on the full image path
 // — not just the "ai-status.exe" name — and skips its own PID, so a same-named
-// binary in another folder is left alone. TerminateProcess is a hard kill;
-// that's acceptable here since the user is uninstalling anyway.
+// binary in another folder is left alone. TerminateProcess is a hard kill, so
+// it bypasses the signal handler's termManager.KillAll() and may orphan any
+// embedded terminal/PTY children; that's acceptable here since the user is
+// uninstalling anyway.
 func stopRunningInstances(exe string) error {
 	self := uint32(os.Getpid())
-	exeLower := strings.ToLower(exe)
 	base := strings.ToLower(filepath.Base(exe))
 
 	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
@@ -198,7 +226,7 @@ func stopRunningInstances(exe string) error {
 		buf := make([]uint16, 1024)
 		n := uint32(len(buf))
 		if err := windows.QueryFullProcessImageName(h, 0, &buf[0], &n); err == nil &&
-			strings.ToLower(windows.UTF16ToString(buf[:n])) == exeLower {
+			strings.EqualFold(windows.UTF16ToString(buf[:n]), exe) {
 			if err := windows.TerminateProcess(h, 0); err != nil && firstErr == nil {
 				firstErr = err
 			}

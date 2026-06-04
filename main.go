@@ -28,10 +28,10 @@ import (
 	"github.com/getlantern/systray"
 	"github.com/pkg/browser"
 	"github.com/yuin/goldmark"
+	meta "github.com/yuin/goldmark-meta"
 	"github.com/yuin/goldmark/extension"
 	"github.com/yuin/goldmark/parser"
 	"github.com/yuin/goldmark/renderer/html"
-	meta "github.com/yuin/goldmark-meta"
 )
 
 //go:embed static
@@ -176,9 +176,9 @@ func (s *Store) byID(id string) (Session, bool) {
 
 // pub/sub: per-session (full payload) + global (cross-session notify stream)
 type hub struct {
-	mu        sync.Mutex
-	subs      map[string]map[chan string]struct{}
-	globalCh  map[chan string]struct{}
+	mu       sync.Mutex
+	subs     map[string]map[chan string]struct{}
+	globalCh map[chan string]struct{}
 }
 
 func newHub() *hub {
@@ -513,12 +513,14 @@ func main() {
 	if exe, exeDir, err := resolvedExe(); err == nil {
 		cleanupStaleBinary(exe)
 		// Make the app findable in the Start menu / Installed apps list on
-		// first run. Idempotent and best-effort — a failure here must never
-		// stop the server from coming up.
+		// first run. Idempotent and best-effort, and run off the startup path
+		// so a slow first-run shortcut write never delays the server.
 		if !*noRegister {
-			if err := registerApp(exe, exeDir); err != nil {
-				log.Printf("register: %v", err)
-			}
+			go func() {
+				if err := registerApp(exe, exeDir); err != nil {
+					log.Printf("register: %v", err)
+				}
+			}()
 		}
 	}
 
