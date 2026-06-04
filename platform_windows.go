@@ -5,8 +5,16 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"fmt"
 	"io/fs"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 )
 
 // openFileInDefaultApp opens path with the system's default handler.
@@ -67,4 +75,154 @@ func wrapPNGAsICO(sub fs.FS) []byte {
 // pathPlaceholder is a cosmetic hint surfaced to the UI via /api/config.
 func pathPlaceholder() string {
 	return `C:\path\to\project`
+}
+
+// ----- Start menu / Installed apps registration -----
+
+const (
+	appDisplayName = "AI Status"
+	// Per-user uninstall key — no admin rights needed. Anything under this
+	// hive shows up in Settings > Apps > Installed apps.
+	uninstallSubkey = `Software\Microsoft\Windows\CurrentVersion\Uninstall\AI Status`
+)
+
+// startMenuShortcut returns the per-user Start-menu .lnk path. Putting the
+// shortcut here is what makes the app turn up in Start-menu search / All apps.
+func startMenuShortcut() (string, error) {
+	appData := os.Getenv("APPDATA")
+	if appData == "" {
+		return "", fmt.Errorf("APPDATA not set")
+	}
+	return filepath.Join(appData, "Microsoft", "Windows", "Start Menu", "Programs", appDisplayName+".lnk"), nil
+}
+
+// registerApp makes the running exe discoverable as an installed app:
+// a Start-menu shortcut plus a per-user uninstall registry entry. Both
+// pieces are idempotent so this is cheap to call on every startup — the
+// shortcut is only (re)created when missing, and the registry values are
+// refreshed so DisplayVersion tracks self-updates.
+func registerApp(exe, dir string) error {
+	if err := ensureStartMenuShortcut(exe, dir); err != nil {
+		return err
+	}
+	return ensureUninstallEntry(exe, dir)
+}
+
+func ensureStartMenuShortcut(exe, dir string) error {
+	lnk, err := startMenuShortcut()
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(lnk); err == nil {
+		return nil // already there — don't spawn PowerShell on every boot
+	}
+	if err := os.MkdirAll(filepath.Dir(lnk), 0o755); err != nil {
+		return err
+	}
+	// Create the .lnk via the WScript.Shell COM object. Guarded by the Stat
+	// above, this PowerShell spawn happens once (first run), which beats
+	// hand-rolling the binary shell-link format. Single-quoted PS strings
+	// keep Windows backslash paths literal.
+	q := func(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
+	ps := fmt.Sprintf(
+		`$s=(New-Object -ComObject WScript.Shell).CreateShortcut(%s);`+
+			`$s.TargetPath=%s;$s.WorkingDirectory=%s;$s.IconLocation=%s;`+
+			`$s.Description='Live dashboard for Claude Code session status';$s.Save()`,
+		q(lnk), q(exe), q(dir), q(exe+",0"))
+	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps)
+	return cmd.Run()
+}
+
+func ensureUninstallEntry(exe, dir string) error {
+	k, _, err := registry.CreateKey(registry.CURRENT_USER, uninstallSubkey, registry.WRITE)
+	if err != nil {
+		return err
+	}
+	defer k.Close()
+
+	str := map[string]string{
+		"DisplayName":     appDisplayName,
+		"DisplayIcon":     exe,
+		"Publisher":       "Jens Willmer",
+		"InstallLocation": dir,
+		// Quoted exe path so spaces survive; the GUI build exits silently.
+		"UninstallString": `"` + exe + `" --uninstall`,
+		"URLInfoAbout":    "https://github.com/jwillmer/ai-status",
+	}
+	if v := strings.TrimPrefix(Version, "v"); v != "" && v != "dev" {
+		str["DisplayVersion"] = v
+	}
+	for name, val := range str {
+		if err := k.SetStringValue(name, val); err != nil {
+			return err
+		}
+	}
+	// Hide the Modify/Repair buttons — there's nothing to modify or repair.
+	_ = k.SetDWordValue("NoModify", 1)
+	_ = k.SetDWordValue("NoRepair", 1)
+	return nil
+}
+
+// stopRunningInstances terminates any already-running copy of *this* exe so
+// `--uninstall` (e.g. the Settings uninstall button) doesn't leave a server
+// holding the port and a tray icon behind. It matches on the full image path
+// — not just the "ai-status.exe" name — and skips its own PID, so a same-named
+// binary in another folder is left alone. TerminateProcess is a hard kill;
+// that's acceptable here since the user is uninstalling anyway.
+func stopRunningInstances(exe string) error {
+	self := uint32(os.Getpid())
+	exeLower := strings.ToLower(exe)
+	base := strings.ToLower(filepath.Base(exe))
+
+	snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(snap)
+
+	var pe windows.ProcessEntry32
+	pe.Size = uint32(unsafe.Sizeof(pe))
+
+	var firstErr error
+	for err := windows.Process32First(snap, &pe); err == nil; err = windows.Process32Next(snap, &pe) {
+		if pe.ProcessID == self {
+			continue
+		}
+		if strings.ToLower(windows.UTF16ToString(pe.ExeFile[:])) != base {
+			continue
+		}
+		h, err := windows.OpenProcess(windows.PROCESS_TERMINATE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pe.ProcessID)
+		if err != nil {
+			continue
+		}
+		buf := make([]uint16, 1024)
+		n := uint32(len(buf))
+		if err := windows.QueryFullProcessImageName(h, 0, &buf[0], &n); err == nil &&
+			strings.ToLower(windows.UTF16ToString(buf[:n])) == exeLower {
+			if err := windows.TerminateProcess(h, 0); err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		windows.CloseHandle(h)
+	}
+	return firstErr
+}
+
+// unregisterApp reverses registerApp. It removes only the OS registration —
+// never the exe or user data — so uninstalling a portable copy is safe.
+func unregisterApp() error {
+	var firstErr error
+	if lnk, err := startMenuShortcut(); err == nil {
+		if err := os.Remove(lnk); err != nil && !os.IsNotExist(err) {
+			firstErr = err
+		}
+	} else {
+		firstErr = err
+	}
+	if err := registry.DeleteKey(registry.CURRENT_USER, uninstallSubkey); err != nil && err != registry.ErrNotExist {
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }

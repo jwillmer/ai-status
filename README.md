@@ -121,6 +121,17 @@ Or directly: `go build -o ai-status .`
 
 Opens the browser automatically and adds a tray icon. Sessions and app data are written under the working directory (`./sessions/`, `./data/`).
 
+### Windows: find it in the app list
+
+On first run the exe registers itself per-user (no admin, no separate installer):
+
+- A **Start menu** shortcut — so "AI Status" shows up in Start-menu search / All apps.
+- An entry in **Settings → Apps → Installed apps** — with the app icon and a working **Uninstall** button (which runs `ai-status.exe --uninstall`).
+
+Registration only ever adds a shortcut and a per-user registry entry; it never moves or deletes the exe, so a portable copy stays portable. Pass `-no-register` to skip it, or run `ai-status.exe --uninstall` to remove the entries by hand. Uninstalling also stops any running instance (so the server frees the port and the tray icon disappears); it never touches the exe or your sessions/data. The shortcut points at wherever the exe currently lives — move the exe and re-run it to refresh.
+
+On **Linux** use `./scripts/install-desktop.sh` for the equivalent `.desktop` entry; on **macOS** drag a `.app` bundle to the Dock.
+
 ### Flags
 
 | Flag | Default | Purpose |
@@ -129,6 +140,8 @@ Opens the browser automatically and adds a tray icon. Sessions and app data are 
 | `-root` | `.` | Data root (holds `sessions/`, `data/`, log) |
 | `-no-tray` | `false` | Run without system-tray icon |
 | `-no-open` | `false` | Don't auto-open the browser |
+| `-no-register` | `false` | (Windows) Don't auto-register in the Start menu / Installed apps list |
+| `-uninstall` | `false` | (Windows) Remove the Start menu / Installed apps registration, then exit |
 
 ## Companion skill
 

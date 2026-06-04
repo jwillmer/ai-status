@@ -473,6 +473,8 @@ func main() {
 	root := flag.String("root", ".", "data root")
 	noTray := flag.Bool("no-tray", false, "run without system tray icon")
 	noOpen := flag.Bool("no-open", false, "do not auto-open browser on start")
+	noRegister := flag.Bool("no-register", false, "do not auto-register the app on the Start menu / Installed apps list")
+	uninstall := flag.Bool("uninstall", false, "remove the Start menu / Installed apps registration, then exit")
 	flag.Parse()
 
 	rootAbs, err := filepath.Abs(*root)
@@ -488,10 +490,36 @@ func main() {
 		log.SetOutput(lf)
 	}
 
+	// `--uninstall` (e.g. the Settings > Installed apps uninstall button)
+	// just tears down the OS registration and exits; it never touches the
+	// exe or user data, so a portable copy is safe to "uninstall".
+	if *uninstall {
+		if err := unregisterApp(); err != nil {
+			log.Printf("uninstall: %v", err)
+		}
+		// Also stop a running instance so it stops serving / holding the port
+		// and its tray icon disappears — otherwise an uninstall leaves a live
+		// server behind.
+		if exe, _, err := resolvedExe(); err == nil {
+			if err := stopRunningInstances(exe); err != nil {
+				log.Printf("uninstall: stop running instance: %v", err)
+			}
+		}
+		return
+	}
+
 	// Drop any leftover binary from a prior self-update. Windows-only
 	// in practice — see cleanupStaleBinary in update_windows.go.
-	if exe, _, err := resolvedExe(); err == nil {
+	if exe, exeDir, err := resolvedExe(); err == nil {
 		cleanupStaleBinary(exe)
+		// Make the app findable in the Start menu / Installed apps list on
+		// first run. Idempotent and best-effort — a failure here must never
+		// stop the server from coming up.
+		if !*noRegister {
+			if err := registerApp(exe, exeDir); err != nil {
+				log.Printf("register: %v", err)
+			}
+		}
 	}
 
 	ln, err := listenWithUpdateGrace(*addr)

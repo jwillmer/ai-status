@@ -31,6 +31,14 @@ func openFileInDefaultApp(path string) error {
 	return cmd.Start()
 }
 
+// registerApp / unregisterApp are no-ops on Unix: desktop registration is
+// handled out-of-band by scripts/install-desktop.sh (a .desktop entry on
+// Linux; the Dock/.app bundle on macOS). Defined so platform-neutral main.go
+// links on every OS.
+func registerApp(exe, dir string) error    { return nil }
+func unregisterApp() error                 { return nil }
+func stopRunningInstances(exe string) error { return nil }
+
 // linuxTerminal holds a terminal-emulator launch recipe.
 //
 // bin is the executable (e.g. "gnome-terminal"). Go's exec.LookPath resolves
