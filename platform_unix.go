@@ -14,6 +14,10 @@ import (
 	"syscall"
 )
 
+// hideConsole is a no-op on Unix — console-window suppression is a
+// Windows-only concern. Defined so platform-neutral callers link everywhere.
+func hideConsole(cmd *exec.Cmd) {}
+
 // openFileInDefaultApp opens path with the desktop's default handler.
 // Linux uses xdg-open; macOS uses `open`.
 func openFileInDefaultApp(path string) error {

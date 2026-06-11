@@ -11,6 +11,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"unicode/utf16"
 	"unsafe"
 
@@ -18,11 +19,23 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
+// hideConsole keeps a console child (git, cmd, powershell, go) from flashing
+// a console window. The server exe is built with `-H windowsgui`, so it has
+// no console of its own — without this, Windows allocates a fresh visible
+// console for every console-subsystem child.
+func hideConsole(cmd *exec.Cmd) {
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: windows.CREATE_NO_WINDOW,
+	}
+}
+
 // openFileInDefaultApp opens path with the system's default handler.
 // Windows: `cmd /c start "" <path>`. Empty `""` is the window-title arg that
 // `start` consumes, so the real path always lands as the file arg.
 func openFileInDefaultApp(path string) error {
 	cmd := exec.Command("cmd", "/c", "start", "", path)
+	hideConsole(cmd)
 	return cmd.Start()
 }
 
@@ -135,7 +148,11 @@ func ensureStartMenuShortcut(exe, dir string) error {
 			`$s.TargetPath=%s;$s.WorkingDirectory=%s;$s.IconLocation=%s;`+
 			`$s.Description='Live dashboard for Claude Code session status';$s.Save()`,
 		q(lnk), q(exe), q(dir), q(exe+",0"))
+	// -WindowStyle Hidden alone isn't enough: the console host window appears
+	// before powershell gets to parse the flag. hideConsole suppresses it at
+	// CreateProcess time.
 	cmd := exec.Command("powershell", "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", ps)
+	hideConsole(cmd)
 	return cmd.Run()
 }
 
